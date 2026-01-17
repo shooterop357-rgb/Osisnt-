@@ -1,1 +1,2 @@
-python bot.py
+run:
+  command: python bot.py
