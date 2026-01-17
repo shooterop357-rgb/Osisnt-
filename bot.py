@@ -18,7 +18,12 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME").replace("@", "")
 client = MongoClient(MONGO_URI)
 db = client["ghost_eye"]
 users = db["users"]
+protected = db["protected_numbers"]
 
+# ================= HELPERS =================
+def is_admin(update: Update):
+    return update.effective_user.username and \
+           update.effective_user.username.lower() == ADMIN_USERNAME.lower()
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -36,7 +41,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         credits = "Unlimited" if data.get("unlimited") else data.get("credits", 0)
 
-    # 🔥 BOOT SEQUENCE (same message, edit-based)
+    # 🔥 BOOT SEQUENCE (same message edit)
     steps = [
         "🔐 Secure channel initialized…",
         "🔐 Secure channel initialized…\n🧠 OSINT modules online",
@@ -45,15 +50,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     msg = await update.message.reply_text("🔄 Initializing…")
-
     for step in steps:
-        await asyncio.sleep(0.35)   # balanced speed
+        await asyncio.sleep(0.35)
         await msg.edit_text(step)
-
     await asyncio.sleep(0.6)
     await msg.delete()
 
-    # 🌐 WELCOME MESSAGE
     welcome = (
         "🌐 **Welcome to Ghost Eye OSINT** 🌐\n\n"
         f"👤 **UserID:** `{uid}`\n"
@@ -66,7 +68,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Vehicle / UPI / Etc…"
     )
     await update.message.reply_text(welcome, parse_mode="Markdown")
-    
+
 # ================= SEARCH =================
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -74,6 +76,13 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = users.find_one({"_id": uid})
     if not user:
+        return
+
+    # 🔒 PROTECTED NUMBER CHECK
+    if protected.find_one({"number": text}):
+        await update.message.reply_text(
+            "❌ This number is protected and cannot be searched."
+        )
         return
 
     if not user.get("unlimited") and user.get("credits", 0) <= 0:
@@ -136,36 +145,9 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ================= ADMIN =================
-def is_admin(update):
-    return update.effective_user.username == ADMIN_USERNAME
-
-async def add_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update): return
-    uid, amt = int(context.args[0]), int(context.args[1])
-    users.update_one({"_id": uid}, {"$inc": {"credits": amt}}, upsert=True)
-    await update.message.reply_text(f"✅ Added {amt} credits to {uid}")
-
-async def remove_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update): return
-    uid, amt = int(context.args[0]), int(context.args[1])
-    users.update_one({"_id": uid}, {"$inc": {"credits": -amt}})
-    await update.message.reply_text(f"✅ Removed {amt} credits from {uid}")
-
-async def unlimited(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update): return
-    uid = int(context.args[0])
-    mode = context.args[1].lower()
-    users.update_one({"_id": uid}, {"$set": {"unlimited": mode == "on"}})
-    await update.message.reply_text(f"✅ Unlimited {mode.upper()} for {uid}")
-
-
 # ================= BROADCAST =================
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sender = update.effective_user
-
-    # admin check
-    if not sender.username or sender.username.lower() != ADMIN_USERNAME.lower():
+    if not is_admin(update):
         await update.message.reply_text("❌ Unauthorized")
         return
 
@@ -174,33 +156,68 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     message = " ".join(context.args)
-    sent = 0
-    failed = 0
+    sent = failed = 0
 
     for u in users.find({}):
         try:
-            await context.bot.send_message(
-                chat_id=u["_id"],
-                text=message
-            )
+            await context.bot.send_message(chat_id=u["_id"], text=message)
             sent += 1
         except:
             failed += 1
 
     await update.message.reply_text(
-        f"✅ Broadcast completed\n"
-        f"📤 Sent: {sent}\n"
-        f"❌ Failed: {failed}"
+        f"✅ Broadcast completed\n📤 Sent: {sent}\n❌ Failed: {failed}"
     )
+
+# ================= PROTECT COMMAND =================
+async def protect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("❌ Unauthorized")
+        return
+
+    if len(context.args) < 1:
+        await update.message.reply_text(
+            "Usage:\n/protect add <number>\n/protect remove <number>\n/protect list"
+        )
+        return
+
+    action = context.args[0].lower()
+
+    if action == "add" and len(context.args) == 2:
+        number = context.args[1]
+        protected.update_one(
+            {"number": number},
+            {"$set": {"number": number}},
+            upsert=True
+        )
+        await update.message.reply_text(f"🔒 Number protected:\n{number}")
+
+    elif action == "remove" and len(context.args) == 2:
+        number = context.args[1]
+        protected.delete_one({"number": number})
+        await update.message.reply_text(f"🔓 Protection removed:\n{number}")
+
+    elif action == "list":
+        nums = list(protected.find())
+        if not nums:
+            await update.message.reply_text("No protected numbers.")
+            return
+        msg = "🔐 Protected Numbers:\n\n"
+        for n in nums:
+            msg += f"• {n['number']}\n"
+        await update.message.reply_text(msg)
+
+    else:
+        await update.message.reply_text(
+            "Usage:\n/protect add <number>\n/protect remove <number>\n/protect list"
+        )
 
 # ================= BOT =================
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("broadcast", broadcast))
-app.add_handler(CommandHandler("add", add_credits))
-app.add_handler(CommandHandler("remove", remove_credits))
-app.add_handler(CommandHandler("unlimited", unlimited))
+app.add_handler(CommandHandler("protect", protect))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
 
 app.run_polling()
