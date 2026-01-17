@@ -1,12 +1,18 @@
-import os, re, asyncio, requests
+import os
+import re
+import json
+import asyncio
+import requests
 from datetime import datetime
 from pymongo import MongoClient
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
-)
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler,
-    MessageHandler, ContextTypes, filters
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
 )
 
 # ================= ENV =================
@@ -16,28 +22,37 @@ API_KEY = os.getenv("API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
 
-# ---- ENV SAFETY CHECK ----
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN missing")
-if not MONGO_URI:
-    raise RuntimeError("MONGO_URI missing")
-if not API_URL or not API_KEY:
-    raise RuntimeError("API_URL or API_KEY missing")
-if not ADMIN_USERNAME:
-    raise RuntimeError("ADMIN_USERNAME missing")
+if not all([BOT_TOKEN, API_URL, API_KEY, MONGO_URI, ADMIN_USERNAME]):
+    raise RuntimeError("Missing required environment variables")
 
 # ================= DB =================
 client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
 db = client["ghost_eye"]
 users = db["users"]
 
+# ================= BOOT SEQUENCE =================
+async def boot_sequence(update: Update):
+    steps = [
+        "🔐 Secure channel initialized…",
+        "🔐 Secure channel initialized…\n🧠 OSINT modules online",
+        "🔐 Secure channel initialized…\n🧠 OSINT modules online\n🗄️ Database synchronized",
+        "🔐 Secure channel initialized…\n🧠 OSINT modules online\n🗄️ Database synchronized\n🚀 System ready for query"
+    ]
+
+    msg = await update.message.reply_text("🔄 Initializing…")
+    for step in steps:
+        await asyncio.sleep(0.8)
+        await msg.edit_text(step)
+
+    await asyncio.sleep(1.5)
+    await msg.delete()
+
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    uid = user.id
+    uid = update.effective_user.id
 
-    data = users.find_one({"_id": uid})
-    if not data:
+    user = users.find_one({"_id": uid})
+    if not user:
         users.insert_one({
             "_id": uid,
             "credits": 2,
@@ -46,23 +61,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
         credits = 2
     else:
-        credits = data.get("credits", 0)
+        credits = user.get("credits", 0)
 
-    # 🔐 Intro (auto delete)
-    intro_text = (
-        "🔐 Secure channel initialized…\n"
-        "🧠 OSINT modules online\n"
-        "🗄️ Database synchronized\n"
-        "🚀 System ready for query"
-    )
-    intro_msg = await update.message.reply_text(intro_text)
-    await asyncio.sleep(3)
-    try:
-        await intro_msg.delete()
-    except:
-        pass
+    await boot_sequence(update)
 
-    # Welcome message
     welcome = (
         "🌐 Welcome to Our OSINT Bot 🌐\n\n"
         f"👤 UserID : {uid}\n"
@@ -87,26 +89,20 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Please use /start first")
         return
 
-    # Credit check
     if not user.get("unlimited") and user.get("credits", 0) <= 0:
         btn = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "💳 Buy Credits",
-                url=f"https://t.me/{ADMIN_USERNAME}"
-            )
+            InlineKeyboardButton("💳 Buy Credits", url=f"https://t.me/{ADMIN_USERNAME}")
         ]])
         await update.message.reply_text(
-            "❌ No credits left\n💳 Buy more credits to continue\n👇 Tap the button below",
+            "❌ No credits left\n💳 Buy more credits to continue",
             reply_markup=btn
         )
         return
 
-    # Number validation
     if not re.fullmatch(r"[6-9]\d{9}", text):
         await update.message.reply_text("❌ Invalid mobile number")
         return
 
-    # API call
     try:
         resp = requests.get(
             API_URL,
@@ -126,27 +122,39 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No data found")
         return
 
-    # Deduct credit ONLY on success
+    # Deduct credit only on success
     if not user.get("unlimited"):
-        users.update_one(
-            {"_id": uid},
-            {"$inc": {"credits": -1}}
-        )
+        users.update_one({"_id": uid}, {"$inc": {"credits": -1}})
         remaining = user.get("credits", 0) - 1
     else:
         remaining = "Unlimited"
 
+    # ===== JSON STYLE RESULT =====
+    cleaned = []
+    for r in data["result"]:
+        cleaned.append({
+            "mobile": r.get("mobile"),
+            "name": r.get("name"),
+            "fname": r.get("fname") or r.get("father_name"),
+            "address": r.get("address", "").replace("!", " ").replace("  ", " "),
+            "alt": r.get("alt") or r.get("alt_mobile"),
+            "circle": r.get("circle"),
+            "id": r.get("id") or r.get("id_number"),
+            "email": r.get("email", "")
+        })
+
+    pretty_json = json.dumps(cleaned, indent=2, ensure_ascii=False)
+
     await update.message.reply_text(
-        f"✅ Search successful\n"
-        f"💳 Remaining credits: {remaining}\n\n"
-        f"{data['result']}"
+        f"✅ Search successful\n💳 Remaining credits: {remaining}\n\n"
+        f"```json\n{pretty_json}\n```",
+        parse_mode="Markdown"
     )
 
 # ================= BROADCAST =================
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender = update.effective_user
 
-    # Safe admin check
     if not sender.username or sender.username.lower() != ADMIN_USERNAME.lower():
         await update.message.reply_text("❌ Unauthorized")
         return
@@ -156,8 +164,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     message = " ".join(context.args)
-    sent = 0
-    failed = 0
+    sent = failed = 0
 
     for u in users.find({}):
         try:
@@ -167,14 +174,14 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed += 1
 
     await update.message.reply_text(
-        f"✅ Broadcast completed\n"
-        f"📤 Sent: {sent}\n"
-        f"❌ Failed: {failed}"
+        f"✅ Broadcast completed\n📤 Sent: {sent}\n❌ Failed: {failed}"
     )
 
 # ================= BOT =================
 app = ApplicationBuilder().token(BOT_TOKEN).build()
+
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("broadcast", broadcast))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
+
 app.run_polling()
