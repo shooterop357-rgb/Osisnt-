@@ -16,8 +16,18 @@ API_KEY = os.getenv("API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
 
+# ---- ENV SAFETY CHECK ----
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN missing")
+if not MONGO_URI:
+    raise RuntimeError("MONGO_URI missing")
+if not API_URL or not API_KEY:
+    raise RuntimeError("API_URL or API_KEY missing")
+if not ADMIN_USERNAME:
+    raise RuntimeError("ADMIN_USERNAME missing")
+
 # ================= DB =================
-client = MongoClient(MONGO_URI)
+client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
 db = client["ghost_eye"]
 users = db["users"]
 
@@ -36,20 +46,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
         credits = 2
     else:
-        credits = data["credits"]
+        credits = data.get("credits", 0)
 
     # 🔐 Intro (auto delete)
-    intro = (
+    intro_text = (
         "🔐 Secure channel initialized…\n"
         "🧠 OSINT modules online\n"
         "🗄️ Database synchronized\n"
         "🚀 System ready for query"
     )
-    intro_msg = await update.message.reply_text(intro)
+    intro_msg = await update.message.reply_text(intro_text)
     await asyncio.sleep(3)
-    await intro_msg.delete()
+    try:
+        await intro_msg.delete()
+    except:
+        pass
 
-    # Welcome screen
+    # Welcome message
     welcome = (
         "🌐 Welcome to Our OSINT Bot 🌐\n\n"
         f"👤 UserID : {uid}\n"
@@ -71,10 +84,11 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = users.find_one({"_id": uid})
     if not user:
+        await update.message.reply_text("⚠️ Please use /start first")
         return
 
-    # No credits
-    if not user.get("unlimited") and user["credits"] <= 0:
+    # Credit check
+    if not user.get("unlimited") and user.get("credits", 0) <= 0:
         btn = InlineKeyboardMarkup([[
             InlineKeyboardButton(
                 "💳 Buy Credits",
@@ -94,7 +108,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # API call
     try:
-        r = requests.get(
+        resp = requests.get(
             API_URL,
             params={
                 "key": API_KEY,
@@ -103,9 +117,9 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             },
             timeout=10
         )
-        data = r.json()
-    except:
-        await update.message.reply_text("⚠️ API error, try again")
+        data = resp.json()
+    except Exception:
+        await update.message.reply_text("⚠️ API error, try again later")
         return
 
     if not data.get("success") or not data.get("result"):
@@ -118,7 +132,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"_id": uid},
             {"$inc": {"credits": -1}}
         )
-        remaining = user["credits"] - 1
+        remaining = user.get("credits", 0) - 1
     else:
         remaining = "Unlimited"
 
@@ -132,7 +146,8 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender = update.effective_user
 
-    if sender.username != ADMIN_USERNAME:
+    # Safe admin check
+    if not sender.username or sender.username.lower() != ADMIN_USERNAME.lower():
         await update.message.reply_text("❌ Unauthorized")
         return
 
@@ -146,10 +161,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for u in users.find({}):
         try:
-            await context.bot.send_message(
-                chat_id=u["_id"],
-                text=message
-            )
+            await context.bot.send_message(chat_id=u["_id"], text=message)
             sent += 1
         except:
             failed += 1
