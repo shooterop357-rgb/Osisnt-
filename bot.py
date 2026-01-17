@@ -19,6 +19,7 @@ client = MongoClient(MONGO_URI)
 db = client["ghost_eye"]
 users = db["users"]
 
+
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -35,26 +36,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         credits = "Unlimited" if data.get("unlimited") else data.get("credits", 0)
 
-    # ⚡ Fast animation (edit-based)
-    msg = await update.message.reply_text("🔐 Initializing secure channel…")
-    await asyncio.sleep(0.4)
-    await msg.edit_text("🔐 Secure channel initialized…\n🧠 OSINT modules online")
-    await asyncio.sleep(0.4)
-    await msg.edit_text(
-        "🔐 Secure channel initialized…\n"
-        "🧠 OSINT modules online\n"
-        "🗄️ Database synchronized"
-    )
-    await asyncio.sleep(0.4)
-    await msg.edit_text(
-        "🔐 Secure channel initialized…\n"
-        "🧠 OSINT modules online\n"
-        "🗄️ Database synchronized\n"
-        "🚀 System ready for query"
-    )
+    # 🔥 BOOT SEQUENCE (same message, edit-based)
+    steps = [
+        "🔐 Secure channel initialized…",
+        "🔐 Secure channel initialized…\n🧠 OSINT modules online",
+        "🔐 Secure channel initialized…\n🧠 OSINT modules online\n🗄️ Database synchronized",
+        "🔐 Secure channel initialized…\n🧠 OSINT modules online\n🗄️ Database synchronized\n🚀 System ready for query"
+    ]
+
+    msg = await update.message.reply_text("🔄 Initializing…")
+
+    for step in steps:
+        await asyncio.sleep(0.35)   # balanced speed
+        await msg.edit_text(step)
+
     await asyncio.sleep(0.6)
     await msg.delete()
 
+    # 🌐 WELCOME MESSAGE
     welcome = (
         "🌐 **Welcome to Ghost Eye OSINT** 🌐\n\n"
         f"👤 **UserID:** `{uid}`\n"
@@ -67,7 +66,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Vehicle / UPI / Etc…"
     )
     await update.message.reply_text(welcome, parse_mode="Markdown")
-
+    
 # ================= SEARCH =================
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -160,10 +159,45 @@ async def unlimited(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users.update_one({"_id": uid}, {"$set": {"unlimited": mode == "on"}})
     await update.message.reply_text(f"✅ Unlimited {mode.upper()} for {uid}")
 
+
+# ================= BROADCAST =================
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sender = update.effective_user
+
+    # admin check
+    if not sender.username or sender.username.lower() != ADMIN_USERNAME.lower():
+        await update.message.reply_text("❌ Unauthorized")
+        return
+
+    if not context.args:
+        await update.message.reply_text("⚠️ Usage:\n/broadcast your message")
+        return
+
+    message = " ".join(context.args)
+    sent = 0
+    failed = 0
+
+    for u in users.find({}):
+        try:
+            await context.bot.send_message(
+                chat_id=u["_id"],
+                text=message
+            )
+            sent += 1
+        except:
+            failed += 1
+
+    await update.message.reply_text(
+        f"✅ Broadcast completed\n"
+        f"📤 Sent: {sent}\n"
+        f"❌ Failed: {failed}"
+    )
+
 # ================= BOT =================
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("broadcast", broadcast))
 app.add_handler(CommandHandler("add", add_credits))
 app.add_handler(CommandHandler("remove", remove_credits))
 app.add_handler(CommandHandler("unlimited", unlimited))
