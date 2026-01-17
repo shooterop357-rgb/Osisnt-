@@ -92,20 +92,38 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_valid_number(text):
         return
 
+    # 🔒 Protected number check
     if protected.find_one({"number": text}):
-        await update.message.reply_text("❌ This number is protected and cannot be searched.")
+        await update.message.reply_text(
+            "❌ This number is protected and cannot be searched."
+        )
         return
 
     user = users.find_one({"_id": uid})
     if not user:
         return
 
+    # 💳 Credit check
     if not user.get("unlimited"):
         if user.get("credits", 0) <= 0:
-            await update.message.reply_text("❌ No credits left.")
-            return
-        users.update_one({"_id": uid}, {"$inc": {"credits": -1}})
+            keyboard = [
+                [InlineKeyboardButton("💳 Buy Credits", url="https://t.me/Frx_Shooter")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
+            await update.message.reply_text(
+                "❌ No credits left\n💳 Buy more credits to continue",
+                reply_markup=reply_markup
+            )
+            return
+
+        # ➖ deduct 1 credit
+        users.update_one(
+            {"_id": uid},
+            {"$inc": {"credits": -1}}
+        )
+
+    # 🌐 API request
     params = {
         "key": API_KEY,
         "type": "mobile",
@@ -115,12 +133,15 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         r = requests.get(API_URL, params=params, timeout=15)
         data = r.json()
-    except:
+    except Exception:
         await update.message.reply_text("❌ API error.")
         return
 
     result = data.get("result", [])
-    remaining = "Unlimited" if user.get("unlimited") else users.find_one({"_id": uid}).get("credits", 0)
+
+    # 🔁 fresh credit fetch
+    user = users.find_one({"_id": uid})
+    remaining = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
 
     pretty = json.dumps(result, indent=4, ensure_ascii=False)
 
