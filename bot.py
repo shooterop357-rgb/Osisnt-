@@ -3,7 +3,7 @@ import re
 import json
 import asyncio
 import requests
-from datetime import datetime, date, time
+from datetime import datetime, date
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -44,19 +44,15 @@ def is_admin(uid: int) -> bool:
     return uid == ADMIN_ID
 
 def is_valid_number(text: str) -> bool:
-    if " " in text or text.startswith("+"):
-        return False
+    # ❌ no space, no +91, only 10 digit Indian number
     return re.fullmatch(r"[6-9]\d{9}", text) is not None
-
-def progress_bar(done, total, size=20):
-    filled = int(size * done / total) if total else 0
-    return "█" * filled + "░" * (size - filled)
 
 def apply_daily_credit(uid: int) -> bool:
     today = date.today().isoformat()
     user = users.find_one({"_id": uid})
     if not user:
         return False
+
     if user.get("last_daily") != today:
         users.update_one(
             {"_id": uid},
@@ -65,38 +61,9 @@ def apply_daily_credit(uid: int) -> bool:
         return True
     return False
 
-# ================= DAILY JOB =================
-async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
-    today = date.today().isoformat()
-    for user in users.find():
-        uid = user["_id"]
-        if user.get("last_daily") == today:
-            continue
-        users.update_one(
-            {"_id": uid},
-            {"$inc": {"credits": 1}, "$set": {"last_daily": today}}
-        )
-        try:
-            await context.bot.send_message(
-                uid,
-                "🎁 You received 1 free daily credit\n\nType /start to claim"
-            )
-        except:
-            pass
-
-# ================= INTRO =================
-async def hacker_intro(update: Update):
-    steps = [
-        "🔐 Secure channel initialized…",
-        "🧠 OSINT modules online",
-        "🗄️ Database synchronized",
-        "🚀 Ghost Eye core loaded",
-    ]
-    msg = await update.message.reply_text("⌛ Initializing…")
-    for s in steps:
-        await asyncio.sleep(0.25)
-        await msg.edit_text(s)
-    await msg.delete()
+def progress_bar(done, total, size=20):
+    filled = int(size * done / total) if total else 0
+    return "█" * filled + "░" * (size - filled)
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -111,8 +78,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
 
     daily = apply_daily_credit(uid)
-    await hacker_intro(update)
-
     user = users.find_one({"_id": uid})
     credits = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
 
@@ -120,12 +85,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🌐 Welcome to Ghost Eye OSINT 🌐\n\n"
         f"👤 UserID: {uid}\n"
         f"💳 Credits: {credits}\n\n"
-        "💡 Send a mobile number to fetch details\n\n"
-        "• Indian Number (10 digits)\n"
+        "💡 Send number to fetch details\n\n"
+        "• Number (without +91)\n"
         "• Name / Address\n"
         "• Operator / Circle\n"
-        "• Alternate Numbers\n"
-        "• Vehicle / UPI / Other linked data"
+        "• Alt Numbers\n"
+        "• Vehicle / UPI / Other"
     )
 
     if daily:
@@ -135,13 +100,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= SEARCH =================
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 🔥 IGNORE SEARCH DURING BROADCAST (ADMIN)
-    if broadcast_state["running"] and is_admin(update.effective_user.id):
-        return
-
     text = update.message.text.strip()
     uid = update.effective_user.id
 
+    # ignore non numeric messages
     if not text.isdigit():
         return
 
@@ -191,6 +153,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
+
     if broadcast_state["running"]:
         await update.message.reply_text("⚠️ Broadcast already running")
         return
@@ -227,6 +190,7 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for u in users.find():
         if not broadcast_state["running"]:
             break
+
         try:
             if photo:
                 await context.bot.send_photo(u["_id"], photo=photo, caption=text)
@@ -245,19 +209,18 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Sent: {broadcast_state['sent']} / {broadcast_state['total']}\n"
             f"Failed: {broadcast_state['failed']}",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✖️ Cancel Broadcast", callback_data="cancel_broadcast")],
-                [InlineKeyboardButton("🛑 Stop Broadcast", callback_data="cancel_broadcast")]
+                [InlineKeyboardButton("✖️ Cancel Broadcast", callback_data="cancel_broadcast")]
             ])
         )
+
         await asyncio.sleep(0.05)
 
-    if broadcast_state["running"]:
-        broadcast_state["running"] = False
-        await progress.edit_text(
-            f"✅ Broadcast finished\n\n"
-            f"Sent: {broadcast_state['sent']}\n"
-            f"Failed: {broadcast_state['failed']}"
-        )
+    broadcast_state["running"] = False
+    await progress.edit_text(
+        f"✅ Broadcast finished\n\n"
+        f"Sent: {broadcast_state['sent']}\n"
+        f"Failed: {broadcast_state['failed']}"
+    )
 
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     broadcast_state["running"] = False
@@ -311,12 +274,9 @@ def main():
     app.add_handler(CommandHandler("unprotect", unprotect_number))
     app.add_handler(CallbackQueryHandler(cancel_broadcast, pattern="cancel_broadcast"))
 
-    # 🔥 ORDER FIX (THIS WAS THE BUG)
-    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
+    # ORDER IS IMPORTANT
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
-
-    # 🕛 DAILY CREDIT SCHEDULER
-    app.job_queue.run_daily(daily_credit_job, time=time(0, 0))
+    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
 
     app.run_polling()
 
