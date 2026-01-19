@@ -30,7 +30,7 @@ db = mongo["ghost_eye"]
 users = db["users"]
 protected = db["protected"]
 
-# ================= GLOBAL =================
+# ================= GLOBAL (ONLY ONCE) =================
 broadcast_state = {
     "running": False,
     "sent": 0,
@@ -57,10 +57,6 @@ def apply_daily_credit(uid: int):
         return True
     return False
 
-def progress_bar(done, total, size=20):
-    filled = int(size * done / total) if total else 0
-    return "█" * filled + "░" * (size - filled)
-
 # ================= INTRO =================
 async def hacker_intro(update: Update):
     steps = [
@@ -71,7 +67,7 @@ async def hacker_intro(update: Update):
     ]
     msg = await update.message.reply_text("⌛ Initializing…")
     for s in steps:
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.25)
         await msg.edit_text(s)
     await msg.delete()
 
@@ -115,14 +111,11 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     uid = update.effective_user.id
 
-    # silent ignore non-numeric
     if not text.isdigit():
         return
 
     if not is_valid_number(text):
-        await update.message.reply_text(
-            "❌ Invalid number\n\nExample:\n92865xxxxx"
-        )
+        await update.message.reply_text("❌ Invalid number\n\nExample:\n92865xxxxx")
         return
 
     if protected.find_one({"number": text}):
@@ -156,25 +149,12 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user.get("unlimited"):
         users.update_one({"_id": uid}, {"$inc": {"credits": -1}})
 
-    user = users.find_one({"_id": uid})
-    remaining = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
-
     await update.message.reply_text(
-        f"✅ Search successful\n💳 Remaining: {remaining}\n\n"
         f"```json\n{json.dumps(result, indent=4, ensure_ascii=False)}\n```",
         parse_mode="Markdown"
     )
 
-# ================= GLOBAL =================
-broadcast_state = {
-    "running": False,
-    "sent": 0,
-    "failed": 0,
-    "total": 0,
-    "progress_msg": None,
-}
-
-# ================= BROADCAST START =================
+# ================= BROADCAST =================
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -191,84 +171,50 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "progress_msg": None,
     })
 
+    context.user_data["awaiting_broadcast"] = True
+
     msg = await update.message.reply_text(
         "📢 Broadcast mode ON\n\n➡️ Send text or photo to broadcast",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🛑 Cancel Broadcast", callback_data="cancel_broadcast")]
         ])
     )
+
     broadcast_state["progress_msg"] = msg
 
-# ================= BROADCAST CONTENT =================
 async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 🔒 HARD GUARD
     if not is_admin(update.effective_user.id):
         return
-    if not broadcast_state["running"]:
+    if not context.user_data.get("awaiting_broadcast"):
         return
+
+    context.user_data["awaiting_broadcast"] = False
 
     text = update.message.caption or update.message.text
     photo = update.message.photo[-1].file_id if update.message.photo else None
 
     for u in users.find():
-        # 🛑 STOP IMMEDIATELY IF CANCELLED
         if not broadcast_state["running"]:
             break
-
         try:
             if photo:
-                await context.bot.send_photo(
-                    chat_id=u["_id"],
-                    photo=photo,
-                    caption=text
-                )
+                await context.bot.send_photo(u["_id"], photo=photo, caption=text)
             else:
-                await context.bot.send_message(
-                    chat_id=u["_id"],
-                    text=text
-                )
+                await context.bot.send_message(u["_id"], text)
             broadcast_state["sent"] += 1
         except:
             broadcast_state["failed"] += 1
-
-        # 📊 Progress update
-        done = broadcast_state["sent"]
-        total = broadcast_state["total"]
-        percent = int((done / total) * 100) if total else 0
-        bar_len = 20
-        filled = int(bar_len * percent / 100)
-        bar = "█" * filled + "░" * (bar_len - filled)
-
-        if broadcast_state["progress_msg"]:
-            try:
-                await broadcast_state["progress_msg"].edit_text(
-                    f"📢 Broadcasting…\n\n"
-                    f"{bar} {percent}%\n"
-                    f"Sent: {done} / {total}\n"
-                    f"Failed: {broadcast_state['failed']}",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🛑 Cancel Broadcast", callback_data="cancel_broadcast")]
-                    ])
-                )
-            except:
-                pass
-
         await asyncio.sleep(0.05)
 
-    # ✅ CLEAN FINISH (only if not cancelled)
-    if broadcast_state["running"]:
-        broadcast_state["running"] = False
-        if broadcast_state["progress_msg"]:
-            await broadcast_state["progress_msg"].edit_text(
-                f"✅ Broadcast finished\n\n"
-                f"Sent: {broadcast_state['sent']}\n"
-                f"Failed: {broadcast_state['failed']}"
-            )
+    broadcast_state["running"] = False
+    await broadcast_state["progress_msg"].edit_text(
+        f"✅ Broadcast finished\nSent: {broadcast_state['sent']}\nFailed: {broadcast_state['failed']}"
+    )
 
-# ================= CANCEL BROADCAST =================
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     broadcast_state["running"] = False
-    await update.callback_query.answer("Broadcast stopped")
+    context.user_data["awaiting_broadcast"] = False
+    await update.callback_query.answer("Stopped")
     await update.callback_query.edit_message_text("🛑 Broadcast cancelled")
 
 # ================= MAIN =================
@@ -279,11 +225,8 @@ def main():
     app.add_handler(CommandHandler("broadcast", broadcast_start))
     app.add_handler(CallbackQueryHandler(cancel_broadcast, pattern="cancel_broadcast"))
 
-    # 🔹 Search FIRST (numbers never break)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
-
-    # 🔹 Broadcast content LAST
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, broadcast_content))
+    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
 
     app.run_polling()
 
