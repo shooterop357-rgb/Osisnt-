@@ -36,10 +36,10 @@ protected = db["protected"]
 # ================= BROADCAST STATE =================
 broadcast_state = {
     "running": False,
+    "cancelled": False,
     "sent": 0,
     "failed": 0,
     "total": 0,
-    "progress_msg": None,
 }
 
 # ================= HELPERS =================
@@ -53,10 +53,18 @@ def progress_bar(done, total, size=20):
     filled = int(size * done / total) if total else 0
     return "█" * filled + "░" * (size - filled)
 
+# ================= HACKER INTRO =================
+async def hacker_intro(update: Update):
+    await update.message.reply_text(
+        "🔐 Ghost Eye OSINT Initialized\n"
+        "🧠 Modules Loaded\n"
+        "🗄️ Database Synced\n"
+        "🚀 System Online"
+    )
+
 # ================= DAILY CREDIT JOB =================
 async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
     today = date.today().isoformat()
-
     for user in users.find():
         if user.get("last_daily") == today:
             continue
@@ -86,6 +94,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "created_at": datetime.utcnow()
         })
 
+    await hacker_intro(update)
+
     user = users.find_one({"_id": uid})
     credits = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
 
@@ -94,16 +104,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 UserID: {uid}\n"
         f"💳 Credits: {credits}\n\n"
         "💡 Send number to fetch details\n\n"
-        "• 10 digit Indian number\n"
-        "• Name / Address\n"
-        "• Operator / Circle\n"
-        "• Alternate Numbers\n"
-        "• Vehicle / UPI / Other"
+        "Example:\n92865xxxxx"
     )
 
 # ================= SEARCH =================
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 🚫 HARD BLOCK SEARCH DURING BROADCAST
     if broadcast_state["running"]:
         return
 
@@ -144,9 +149,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     result = data.get("result", [])
     if not result:
-        await update.message.reply_text(
-            "⚠️ No data found\n💳 Credit not deducted"
-        )
+        await update.message.reply_text("⚠️ No data found\n💳 Credit not deducted")
         return
 
     if not user.get("unlimited"):
@@ -168,10 +171,10 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     broadcast_state.update({
         "running": True,
+        "cancelled": False,
         "sent": 0,
         "failed": 0,
         "total": users.count_documents({}),
-        "progress_msg": None,
     })
 
     await update.message.reply_text(
@@ -193,10 +196,9 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo = update.message.photo[-1].file_id if update.message.photo else None
 
     progress = await update.message.reply_text("📢 Broadcasting…")
-    broadcast_state["progress_msg"] = progress
 
     for u in users.find():
-        if not broadcast_state["running"]:
+        if not broadcast_state["running"] or broadcast_state["cancelled"]:
             break
 
         try:
@@ -227,19 +229,20 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(0.05)
 
     broadcast_state["running"] = False
-    await progress.edit_text(
-        f"✅ Broadcast finished\n\n"
-        f"Sent: {broadcast_state['sent']}\n"
-        f"Failed: {broadcast_state['failed']}"
-    )
+
+    if broadcast_state["cancelled"]:
+        await progress.edit_text("✖️ Broadcast cancelled")
+    else:
+        await progress.edit_text(
+            f"✅ Broadcast finished\n\n"
+            f"Sent: {broadcast_state['sent']}\n"
+            f"Failed: {broadcast_state['failed']}"
+        )
 
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer("Stopping broadcast…")
+    await update.callback_query.answer("Cancelling…")
+    broadcast_state["cancelled"] = True
     broadcast_state["running"] = False
-    try:
-        await update.callback_query.edit_message_text("✖️ Broadcast cancelled")
-    except:
-        pass
 
 # ================= ADMIN =================
 async def add_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -284,12 +287,9 @@ def main():
     app.add_handler(CommandHandler("unprotect", unprotect_number))
     app.add_handler(CallbackQueryHandler(cancel_broadcast, pattern="cancel_broadcast"))
 
-    # 🔥 BROADCAST FIRST
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
-    # 🔥 SEARCH LAST
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
 
-    # 🕘 Daily credit 9 AM IST
     app.job_queue.run_daily(
         daily_credit_job,
         time=time(9, 0, tzinfo=IST)
