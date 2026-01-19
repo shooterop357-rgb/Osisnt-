@@ -3,10 +3,8 @@ import json
 import re
 import asyncio
 import requests
-from datetime import datetime
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-from telegram import Update
+from datetime import datetime, date
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -14,7 +12,6 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-
 from pymongo import MongoClient
 
 # ================= CONFIG =================
@@ -35,193 +32,165 @@ protected = db["protected"]
 def is_admin(uid: int) -> bool:
     return uid == ADMIN_ID
 
-def is_valid_number(text: str) -> bool:
-    return re.fullmatch(r"[6-9]\d{9}", text) is not None
+def normalize_number(text: str):
+    text = re.sub(r"\s+", "", text).replace("+", "")
+    if text.startswith("91") and len(text) == 12:
+        text = text[2:]
+    if re.fullmatch(r"[6-9]\d{9}", text):
+        return text
+    return None
 
-# ================= BOOT SEQUENCE =================
+def apply_daily_credit(uid: int):
+    today = date.today().isoformat()
+    user = users.find_one({"_id": uid})
+    if not user:
+        return False
+
+    if user.get("last_daily") != today:
+        users.update_one(
+            {"_id": uid},
+            {
+                "$inc": {"credits": 1},
+                "$set": {"last_daily": today}
+            }
+        )
+        return True
+    return False
+
+# ================= BOOT =================
 async def boot_sequence(update: Update):
     steps = [
         "🔐 Secure channel initialized…",
-        "🔐 Secure channel initialized…\n🧠 OSINT modules online",
-        "🔐 Secure channel initialized…\n🧠 OSINT modules online\n🗄️ Database synchronized",
-        "🔐 Secure channel initialized…\n🧠 OSINT modules online\n🗄️ Database synchronized\n🚀 System ready for query",
+        "🧠 OSINT modules online",
+        "🗄️ Database synchronized",
+        "🚀 System ready",
     ]
-
     msg = await update.message.reply_text("🔄 Initializing…")
-    for step in steps:
-        await asyncio.sleep(0.35)
-        await msg.edit_text(step)
-
-    await asyncio.sleep(0.5)
+    for s in steps:
+        await asyncio.sleep(0.3)
+        await msg.edit_text(s)
     await msg.delete()
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
-    data = users.find_one({"_id": uid})
-    if not data:
+    user = users.find_one({"_id": uid})
+    if not user:
         users.insert_one({
             "_id": uid,
             "credits": 2,
             "unlimited": False,
             "created_at": datetime.utcnow()
         })
-        credits = 2
-    else:
-        credits = "Unlimited" if data.get("unlimited") else data.get("credits", 0)
+
+    daily_added = apply_daily_credit(uid)
 
     await boot_sequence(update)
 
-    await update.message.reply_text(
-        f"🌐 Welcome to Ghost Eye OSINT 🌐\n\n"
+    user = users.find_one({"_id": uid})
+    credits = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
+
+    msg = (
+        f"🌐 Ghost Eye OSINT\n\n"
         f"👤 UserID: {uid}\n"
-        f"💳 Credits: {credits}\n\n"
-        f"💡 Send number to fetch details\n\n"
-        f"• Number (without +91)\n"
-        f"• Name / Address\n"
-        f"• Operator / Circle\n"
-        f"• Alt Numbers\n"
-        f"• Vehicle / UPI / Etc…"
+        f"💳 Credits: {credits}\n"
     )
+
+    if daily_added:
+        msg += "\n🎁 You received 1 daily free credit"
+
+    await update.message.reply_text(msg)
 
 # ================= SEARCH =================
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+    raw = update.message.text.strip()
     uid = update.effective_user.id
 
-    if not is_valid_number(text):
+    number = normalize_number(raw)
+    if not number:
+        await update.message.reply_text("❌ Invalid number format")
         return
 
-    # 🔒 Protected number check
-    if protected.find_one({"number": text}):
-        await update.message.reply_text(
-            "❌ This number is protected and cannot be searched."
-        )
+    if protected.find_one({"number": number}):
+        await update.message.reply_text("❌ This number is protected")
         return
 
     user = users.find_one({"_id": uid})
     if not user:
         return
 
-    # 💳 Credit check
-    if not user.get("unlimited"):
-        if user.get("credits", 0) <= 0:
-            keyboard = [
-                [InlineKeyboardButton("💳 Buy Credits", url="https://t.me/Frx_Shooter")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            await update.message.reply_text(
-                "❌ No credits left\n💳 Buy more credits to continue",
-                reply_markup=reply_markup
-            )
-            return
-
-        # ➖ deduct 1 credit
-        users.update_one(
-            {"_id": uid},
-            {"$inc": {"credits": -1}}
+    if not user.get("unlimited") and user.get("credits", 0) <= 0:
+        keyboard = [[InlineKeyboardButton("💳 Buy Credits", url="https://t.me/Frx_Shooter")]]
+        await update.message.reply_text(
+            "❌ No credits left",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
+        return
 
-    # 🌐 API request
     params = {
         "key": API_KEY,
         "type": "mobile",
-        "term": text
+        "term": number
     }
 
     try:
         r = requests.get(API_URL, params=params, timeout=15)
         data = r.json()
-    except Exception:
-        await update.message.reply_text("❌ API error.")
+    except:
+        await update.message.reply_text("❌ API error")
         return
 
     result = data.get("result", [])
+    if not result:
+        await update.message.reply_text("⚠️ No data found\n💳 Credit not deducted")
+        return
 
-    # 🔁 fresh credit fetch
+    if not user.get("unlimited"):
+        users.update_one({"_id": uid}, {"$inc": {"credits": -1}})
+
     user = users.find_one({"_id": uid})
     remaining = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
 
     pretty = json.dumps(result, indent=4, ensure_ascii=False)
-
     await update.message.reply_text(
         f"✅ Search successful\n"
         f"💳 Remaining: {remaining}\n\n"
-        f"JSON\n"
         f"```json\n{pretty}\n```",
         parse_mode="Markdown"
     )
 
-# ================= ADMIN COMMANDS =================
-async def add_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= ADMIN =================
+async def broadcast_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
 
-    uid, amount = map(int, context.args)
-    users.update_one({"_id": uid}, {"$inc": {"credits": amount}}, upsert=True)
-    await update.message.reply_text("✅ Credits added.")
-
-async def remove_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    try:
+        text, btn_text, btn_url = " ".join(context.args).split("|")
+    except:
+        await update.message.reply_text(
+            "❌ Format:\n/broadcast_btn message | button text | https://link"
+        )
         return
 
-    uid, amount = map(int, context.args)
-    users.update_one({"_id": uid}, {"$inc": {"credits": -amount}})
-    await update.message.reply_text("✅ Credits removed.")
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton(btn_text.strip(), url=btn_url.strip())]
+    ])
 
-async def unlimited(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-
-    uid = int(context.args[0])
-    mode = context.args[1].lower() == "on"
-
-    users.update_one({"_id": uid}, {"$set": {"unlimited": mode}})
-    await update.message.reply_text("✅ Unlimited updated.")
-
-async def protect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-
-    number = context.args[0]
-    protected.insert_one({"number": number})
-    await update.message.reply_text("✅ Number protected.")
-
-async def unprotect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-
-    number = context.args[0]
-    protected.delete_one({"number": number})
-    await update.message.reply_text("✅ Number unprotected.")
-
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-
-    msg = " ".join(context.args)
     for u in users.find():
         try:
-            await context.bot.send_message(u["_id"], msg)
+            await context.bot.send_message(u["_id"], text.strip(), reply_markup=markup)
         except:
             pass
 
-    await update.message.reply_text("✅ Broadcast sent.")
+    await update.message.reply_text("✅ Broadcast sent with button")
 
 # ================= MAIN =================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("add", add_credit))
-    app.add_handler(CommandHandler("remove", remove_credit))
-    app.add_handler(CommandHandler("unlimited", unlimited))
-    app.add_handler(CommandHandler("protect", protect))
-    app.add_handler(CommandHandler("unprotect", unprotect))
-    app.add_handler(CommandHandler("broadcast", broadcast))
-
+    app.add_handler(CommandHandler("broadcast_btn", broadcast_btn))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
 
     app.run_polling()
