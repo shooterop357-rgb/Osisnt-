@@ -35,6 +35,7 @@ broadcast_state = {
     "running": False,
     "sent": 0,
     "failed": 0,
+    "total": 0,
     "progress_msg": None,
 }
 
@@ -43,6 +44,8 @@ def is_admin(uid: int) -> bool:
     return uid == ADMIN_ID
 
 def is_valid_number(text: str) -> bool:
+    if " " in text or text.startswith("+"):
+        return False
     return re.fullmatch(r"[6-9]\d{9}", text) is not None
 
 def apply_daily_credit(uid: int) -> bool:
@@ -50,7 +53,6 @@ def apply_daily_credit(uid: int) -> bool:
     user = users.find_one({"_id": uid})
     if not user:
         return False
-
     if user.get("last_daily") != today:
         users.update_one(
             {"_id": uid},
@@ -58,6 +60,10 @@ def apply_daily_credit(uid: int) -> bool:
         )
         return True
     return False
+
+def progress_bar(done, total, size=20):
+    filled = int(size * done / total) if total else 0
+    return "█" * filled + "░" * (size - filled)
 
 # ================= INTRO =================
 async def hacker_intro(update: Update):
@@ -118,7 +124,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not is_valid_number(text):
         await update.message.reply_text(
-            "❌ Invalid number\n\nExample:\n92865xxxxx"
+            "❌ Invalid Format\n\nExample:\n92865xxxxx"
         )
         return
 
@@ -164,7 +170,6 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
-
     if broadcast_state["running"]:
         await update.message.reply_text("⚠️ Broadcast already running")
         return
@@ -173,16 +178,16 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "running": True,
         "sent": 0,
         "failed": 0,
+        "total": users.count_documents({}),
         "progress_msg": None,
     })
 
-    msg = await update.message.reply_text(
-        "📢 Broadcast mode ON\n\n➡️ Send text or photo to broadcast",
+    await update.message.reply_text(
+        "📢 Broadcast Mode Enabled\n\nPlease provide the message to broadcast.",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛑 Cancel Broadcast", callback_data="cancel_broadcast")]
+            [InlineKeyboardButton("✖️ Cancel Broadcast", callback_data="cancel_broadcast")]
         ])
     )
-    broadcast_state["progress_msg"] = msg
 
 async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -195,6 +200,9 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.caption or update.message.text
     photo = update.message.photo[-1].file_id if update.message.photo else None
 
+    progress = await update.message.reply_text("📢 Broadcasting…")
+    broadcast_state["progress_msg"] = progress
+
     for u in users.find():
         if not broadcast_state["running"]:
             break
@@ -206,18 +214,33 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             broadcast_state["sent"] += 1
         except:
             broadcast_state["failed"] += 1
+
+        bar = progress_bar(broadcast_state["sent"], broadcast_state["total"])
+        percent = int((broadcast_state["sent"] / broadcast_state["total"]) * 100)
+
+        await progress.edit_text(
+            f"📢 Broadcasting…\n\n"
+            f"{bar} {percent}%\n"
+            f"Sent: {broadcast_state['sent']} / {broadcast_state['total']}\n"
+            f"Failed: {broadcast_state['failed']}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✖️ Cancel Broadcast", callback_data="cancel_broadcast")],
+                [InlineKeyboardButton("🛑 Stop Broadcast", callback_data="cancel_broadcast")]
+            ])
+        )
+
         await asyncio.sleep(0.05)
 
     broadcast_state["running"] = False
-    await broadcast_state["progress_msg"].edit_text(
-        f"✅ Broadcast finished\n\n"
+    await progress.edit_text(
+        f"✅ Broadcast finished\n"
         f"Sent: {broadcast_state['sent']}\n"
         f"Failed: {broadcast_state['failed']}"
     )
 
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     broadcast_state["running"] = False
-    await update.callback_query.edit_message_text("🛑 Broadcast cancelled")
+    await update.callback_query.edit_message_text("✖️ Broadcast cancelled")
 
 # ================= ADMIN =================
 async def add_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
