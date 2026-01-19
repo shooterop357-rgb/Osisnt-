@@ -165,9 +165,22 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ================= BROADCAST =================
+# ================= GLOBAL =================
+broadcast_state = {
+    "running": False,
+    "sent": 0,
+    "failed": 0,
+    "total": 0,
+    "progress_msg": None,
+}
+
+# ================= BROADCAST START =================
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
+        return
+
+    if broadcast_state["running"]:
+        await update.message.reply_text("⚠️ Broadcast already running")
         return
 
     broadcast_state.update({
@@ -178,61 +191,83 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "progress_msg": None,
     })
 
-    context.user_data["awaiting_broadcast"] = True
-
     msg = await update.message.reply_text(
-        "📢 Broadcast started\nSend message or photo to broadcast",
+        "📢 Broadcast mode ON\n\n➡️ Send text or photo to broadcast",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🛑 Cancel Broadcast", callback_data="cancel_broadcast")]
         ])
     )
-
     broadcast_state["progress_msg"] = msg
 
+# ================= BROADCAST CONTENT =================
 async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 🔒 HARD GUARD (this fixes everything)
+    # 🔒 HARD GUARD
     if not is_admin(update.effective_user.id):
         return
-    if not context.user_data.get("awaiting_broadcast"):
+    if not broadcast_state["running"]:
         return
-
-    context.user_data["awaiting_broadcast"] = False
 
     text = update.message.caption or update.message.text
     photo = update.message.photo[-1].file_id if update.message.photo else None
 
     for u in users.find():
+        # 🛑 STOP IMMEDIATELY IF CANCELLED
         if not broadcast_state["running"]:
             break
+
         try:
             if photo:
-                await context.bot.send_photo(u["_id"], photo=photo, caption=text)
+                await context.bot.send_photo(
+                    chat_id=u["_id"],
+                    photo=photo,
+                    caption=text
+                )
             else:
-                await context.bot.send_message(u["_id"], text)
+                await context.bot.send_message(
+                    chat_id=u["_id"],
+                    text=text
+                )
             broadcast_state["sent"] += 1
         except:
             broadcast_state["failed"] += 1
 
-        bar = progress_bar(broadcast_state["sent"], broadcast_state["total"])
-        percent = int((broadcast_state["sent"] / broadcast_state["total"]) * 100)
+        # 📊 Progress update
+        done = broadcast_state["sent"]
+        total = broadcast_state["total"]
+        percent = int((done / total) * 100) if total else 0
+        bar_len = 20
+        filled = int(bar_len * percent / 100)
+        bar = "█" * filled + "░" * (bar_len - filled)
 
-        await broadcast_state["progress_msg"].edit_text(
-            f"📢 Broadcasting…\n\n"
-            f"{bar} {percent}%\n"
-            f"Sent: {broadcast_state['sent']} / {broadcast_state['total']}\n"
-            f"Failed: {broadcast_state['failed']}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🛑 Cancel Broadcast", callback_data="cancel_broadcast")]
-            ])
-        )
+        if broadcast_state["progress_msg"]:
+            try:
+                await broadcast_state["progress_msg"].edit_text(
+                    f"📢 Broadcasting…\n\n"
+                    f"{bar} {percent}%\n"
+                    f"Sent: {done} / {total}\n"
+                    f"Failed: {broadcast_state['failed']}",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🛑 Cancel Broadcast", callback_data="cancel_broadcast")]
+                    ])
+                )
+            except:
+                pass
 
         await asyncio.sleep(0.05)
 
-    broadcast_state["running"] = False
+    # ✅ CLEAN FINISH (only if not cancelled)
+    if broadcast_state["running"]:
+        broadcast_state["running"] = False
+        if broadcast_state["progress_msg"]:
+            await broadcast_state["progress_msg"].edit_text(
+                f"✅ Broadcast finished\n\n"
+                f"Sent: {broadcast_state['sent']}\n"
+                f"Failed: {broadcast_state['failed']}"
+            )
 
+# ================= CANCEL BROADCAST =================
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     broadcast_state["running"] = False
-    context.user_data["awaiting_broadcast"] = False
     await update.callback_query.answer("Broadcast stopped")
     await update.callback_query.edit_message_text("🛑 Broadcast cancelled")
 
@@ -244,8 +279,10 @@ def main():
     app.add_handler(CommandHandler("broadcast", broadcast_start))
     app.add_handler(CallbackQueryHandler(cancel_broadcast, pattern="cancel_broadcast"))
 
-    # 🔴 ORDER MATTERS (THIS IS THE FIX)
+    # 🔹 Search FIRST (numbers never break)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
+
+    # 🔹 Broadcast content LAST
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, broadcast_content))
 
     app.run_polling()
