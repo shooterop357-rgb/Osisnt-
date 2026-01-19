@@ -25,6 +25,8 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 API_URL = "https://mynkapi.amit1100941.workers.dev/api"
 API_KEY = os.getenv("API_KEY")
 
+IST = ZoneInfo("Asia/Kolkata")
+
 # ================= DB =================
 mongo = MongoClient(MONGO_URI)
 db = mongo["ghost_eye"]
@@ -45,9 +47,7 @@ def is_admin(uid: int) -> bool:
     return uid == ADMIN_ID
 
 def is_valid_number(text: str) -> bool:
-    if not text.isdigit():
-        return False
-    return re.fullmatch(r"[6-9]\d{9}", text) is not None
+    return bool(re.fullmatch(r"[6-9]\d{9}", text))
 
 def progress_bar(done, total, size=20):
     filled = int(size * done / total) if total else 0
@@ -56,6 +56,7 @@ def progress_bar(done, total, size=20):
 # ================= DAILY CREDIT JOB =================
 async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
     today = date.today().isoformat()
+
     for user in users.find():
         if user.get("last_daily") == today:
             continue
@@ -92,16 +93,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🌐 Welcome to Ghost Eye OSINT 🌐\n\n"
         f"👤 UserID: {uid}\n"
         f"💳 Credits: {credits}\n\n"
-        "💡 Send a mobile number to fetch details\n\n"
-        "• Indian Number (10 digits)\n"
+        "💡 Send number to fetch details\n\n"
+        "• 10 digit Indian number\n"
         "• Name / Address\n"
         "• Operator / Circle\n"
         "• Alternate Numbers\n"
-        "• Vehicle / UPI / Other linked data"
+        "• Vehicle / UPI / Other"
     )
 
 # ================= SEARCH =================
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 🚫 HARD BLOCK SEARCH DURING BROADCAST
+    if broadcast_state["running"]:
+        return
+
     text = update.message.text.strip()
     uid = update.effective_user.id
 
@@ -170,7 +175,7 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
 
     await update.message.reply_text(
-        "📢 Broadcast Mode Enabled\n\nPlease provide the message to broadcast.",
+        "📢 Broadcast Mode Enabled\n\nSend message or photo to broadcast.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✖️ Cancel Broadcast", callback_data="cancel_broadcast")]
         ])
@@ -238,38 +243,33 @@ async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= ADMIN =================
 async def add_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    uid, amt = map(int, context.args)
-    users.update_one({"_id": uid}, {"$inc": {"credits": amt}}, upsert=True)
-    await update.message.reply_text("✅ Credits added")
+    if is_admin(update.effective_user.id):
+        uid, amt = map(int, context.args)
+        users.update_one({"_id": uid}, {"$inc": {"credits": amt}}, upsert=True)
+        await update.message.reply_text("✅ Credits added")
 
 async def remove_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    uid, amt = map(int, context.args)
-    users.update_one({"_id": uid}, {"$inc": {"credits": -amt}})
-    await update.message.reply_text("✅ Credits removed")
+    if is_admin(update.effective_user.id):
+        uid, amt = map(int, context.args)
+        users.update_one({"_id": uid}, {"$inc": {"credits": -amt}})
+        await update.message.reply_text("✅ Credits removed")
 
 async def unlimited(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    uid = int(context.args[0])
-    mode = context.args[1].lower() == "on"
-    users.update_one({"_id": uid}, {"$set": {"unlimited": mode}})
-    await update.message.reply_text("✅ Unlimited updated")
+    if is_admin(update.effective_user.id):
+        uid = int(context.args[0])
+        mode = context.args[1].lower() == "on"
+        users.update_one({"_id": uid}, {"$set": {"unlimited": mode}})
+        await update.message.reply_text("✅ Unlimited updated")
 
 async def protect_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    protected.insert_one({"number": context.args[0]})
-    await update.message.reply_text("✅ Number protected")
+    if is_admin(update.effective_user.id):
+        protected.insert_one({"number": context.args[0]})
+        await update.message.reply_text("✅ Number protected")
 
 async def unprotect_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    protected.delete_one({"number": context.args[0]})
-    await update.message.reply_text("✅ Number unprotected")
+    if is_admin(update.effective_user.id):
+        protected.delete_one({"number": context.args[0]})
+        await update.message.reply_text("✅ Number unprotected")
 
 # ================= MAIN =================
 def main():
@@ -284,13 +284,15 @@ def main():
     app.add_handler(CommandHandler("unprotect", unprotect_number))
     app.add_handler(CallbackQueryHandler(cancel_broadcast, pattern="cancel_broadcast"))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
+    # 🔥 BROADCAST FIRST
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
+    # 🔥 SEARCH LAST
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
 
-    # Daily credit at 9 AM IST
+    # 🕘 Daily credit 9 AM IST
     app.job_queue.run_daily(
         daily_credit_job,
-        time=time(9, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+        time=time(9, 0, tzinfo=IST)
     )
 
     app.run_polling()
