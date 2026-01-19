@@ -31,7 +31,14 @@ users = db["users"]
 protected = db["protected"]
 
 # ================= GLOBAL =================
-broadcast_state = {"running": False, "sent": 0, "failed": 0}
+broadcast_state = {
+    "running": False,
+    "sent": 0,
+    "failed": 0,
+    "total": 0,
+    "progress_msg_id": None,
+    "chat_id": None,
+}
 
 # ================= HELPERS =================
 def is_admin(uid: int) -> bool:
@@ -50,6 +57,10 @@ def apply_daily_credit(uid: int):
         )
         return True
     return False
+
+def progress_bar(sent, total, length=20):
+    filled = int(length * sent / total) if total else 0
+    return "█" * filled + "░" * (length - filled)
 
 # ================= INTRO =================
 async def hacker_intro(update: Update):
@@ -105,6 +116,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     uid = update.effective_user.id
 
+    # ignore non-numeric text silently
     if not text.isdigit():
         return
 
@@ -159,16 +171,30 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
 
-    broadcast_state.update({"running": True, "sent": 0, "failed": 0})
+    broadcast_state.update({
+        "running": True,
+        "sent": 0,
+        "failed": 0,
+        "total": users.count_documents({}),
+        "chat_id": update.effective_chat.id,
+    })
+
     context.user_data["awaiting_broadcast"] = True
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🛑 Cancel Broadcast", callback_data="cancel_broadcast")]
     ])
 
-    await update.message.reply_text("📢 Broadcast started", reply_markup=kb)
+    msg = await update.message.reply_text(
+        "📢 Broadcast started\nWaiting for message...",
+        reply_markup=kb
+    )
+
+    broadcast_state["progress_msg_id"] = msg.message_id
 
 async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
     if not context.user_data.get("awaiting_broadcast"):
         return
 
@@ -188,17 +214,32 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             broadcast_state["sent"] += 1
         except:
             broadcast_state["failed"] += 1
+
+        bar = progress_bar(broadcast_state["sent"], broadcast_state["total"])
+        percent = int((broadcast_state["sent"] / broadcast_state["total"]) * 100)
+
+        await context.bot.edit_message_text(
+            chat_id=broadcast_state["chat_id"],
+            message_id=broadcast_state["progress_msg_id"],
+            text=(
+                f"📢 Broadcasting…\n\n"
+                f"{bar} {percent}%\n"
+                f"Sent: {broadcast_state['sent']} / {broadcast_state['total']}\n"
+                f"Failed: {broadcast_state['failed']}"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🛑 Cancel Broadcast", callback_data="cancel_broadcast")]
+            ])
+        )
+
         await asyncio.sleep(0.05)
 
     broadcast_state["running"] = False
-    await update.message.reply_text(
-        f"✅ Broadcast done\nSent: {broadcast_state['sent']}\nFailed: {broadcast_state['failed']}"
-    )
 
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     broadcast_state["running"] = False
-    await update.callback_query.answer("Stopped")
-    await update.callback_query.edit_message_text("🛑 Broadcast stopped")
+    await update.callback_query.answer("Broadcast stopped")
+    await update.callback_query.edit_message_text("🛑 Broadcast cancelled")
 
 # ================= MAIN =================
 def main():
@@ -208,7 +249,10 @@ def main():
     app.add_handler(CommandHandler("broadcast", broadcast_start))
     app.add_handler(CallbackQueryHandler(cancel_broadcast, pattern="cancel_broadcast"))
 
-    app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, broadcast_content))
+    # IMPORTANT: broadcast content ONLY for admin
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, broadcast_content))
+
+    # search handler ONLY for text numbers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
 
     app.run_polling()
