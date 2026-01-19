@@ -68,17 +68,14 @@ def apply_daily_credit(uid: int) -> bool:
 # ================= DAILY JOB =================
 async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
     today = date.today().isoformat()
-
     for user in users.find():
         uid = user["_id"]
         if user.get("last_daily") == today:
             continue
-
         users.update_one(
             {"_id": uid},
             {"$inc": {"credits": 1}, "$set": {"last_daily": today}}
         )
-
         try:
             await context.bot.send_message(
                 uid,
@@ -138,6 +135,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= SEARCH =================
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 🔥 IGNORE SEARCH DURING BROADCAST (ADMIN)
     if broadcast_state["running"] and is_admin(update.effective_user.id):
         return
 
@@ -229,7 +227,6 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for u in users.find():
         if not broadcast_state["running"]:
             break
-
         try:
             if photo:
                 await context.bot.send_photo(u["_id"], photo=photo, caption=text)
@@ -252,7 +249,6 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🛑 Stop Broadcast", callback_data="cancel_broadcast")]
             ])
         )
-
         await asyncio.sleep(0.05)
 
     if broadcast_state["running"]:
@@ -315,10 +311,11 @@ def main():
     app.add_handler(CommandHandler("unprotect", unprotect_number))
     app.add_handler(CallbackQueryHandler(cancel_broadcast, pattern="cancel_broadcast"))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
+    # 🔥 ORDER FIX (THIS WAS THE BUG)
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
 
-    # 🕛 DAILY CREDIT SCHEDULER (SAFE)
+    # 🕛 DAILY CREDIT SCHEDULER
     app.job_queue.run_daily(daily_credit_job, time=time(0, 0))
 
     app.run_polling()
