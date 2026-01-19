@@ -59,7 +59,6 @@ def apply_daily_credit(uid: int):
     user = users.find_one({"_id": uid})
     if not user:
         return False
-
     if user.get("last_daily") != today:
         users.update_one(
             {"_id": uid},
@@ -67,6 +66,21 @@ def apply_daily_credit(uid: int):
         )
         return True
     return False
+
+# ================= HACKER INTRO =================
+async def hacker_intro(update: Update):
+    steps = [
+        "🔐 Secure channel initialized…",
+        "🧠 OSINT modules online",
+        "🗄️ Database synchronized",
+        "🚀 Ghost Eye core loaded",
+    ]
+    msg = await update.message.reply_text("⌛ Initializing…")
+    for s in steps:
+        await asyncio.sleep(0.35)
+        await msg.edit_text(s)
+    await asyncio.sleep(0.4)
+    await msg.delete()
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -82,6 +96,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
 
     daily_added = apply_daily_credit(uid)
+
+    await hacker_intro(update)
+
     user = users.find_one({"_id": uid})
     credits = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
 
@@ -90,7 +107,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 UserID: {uid}\n"
         f"💳 Credits: {credits}\n\n"
         "💡 Send a mobile number to fetch details\n\n"
-        "• Indian Number (auto-detect)\n"
+        "• Indian Numbers Only\n"
         "• Name / Address\n"
         "• Operator / Circle\n"
         "• Alternate Numbers\n"
@@ -124,11 +141,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No credits left")
         return
 
-    params = {
-        "key": API_KEY,
-        "type": "mobile",
-        "term": number
-    }
+    params = {"key": API_KEY, "type": "mobile", "term": number}
 
     try:
         r = requests.get(API_URL, params=params, timeout=15)
@@ -193,30 +206,18 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
         try:
             if photo:
-                await context.bot.send_photo(
-                    u["_id"],
-                    photo=photo,
-                    caption=text,
-                    parse_mode=None
-                )
+                await context.bot.send_photo(u["_id"], photo=photo, caption=text, parse_mode=None)
             else:
-                await context.bot.send_message(
-                    u["_id"],
-                    text,
-                    parse_mode=None
-                )
+                await context.bot.send_message(u["_id"], text, parse_mode=None)
             broadcast_state["sent"] += 1
         except:
             broadcast_state["failed"] += 1
-
         await asyncio.sleep(0.05)
 
     broadcast_state["running"] = False
 
     await update.message.reply_text(
-        f"✅ Broadcast finished\n"
-        f"Sent: {broadcast_state['sent']}\n"
-        f"Failed: {broadcast_state['failed']}"
+        f"✅ Broadcast finished\nSent: {broadcast_state['sent']}\nFailed: {broadcast_state['failed']}"
     )
 
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
