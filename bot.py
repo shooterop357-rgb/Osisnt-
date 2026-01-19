@@ -36,8 +36,7 @@ broadcast_state = {
     "sent": 0,
     "failed": 0,
     "total": 0,
-    "progress_msg_id": None,
-    "chat_id": None,
+    "progress_msg": None,
 }
 
 # ================= HELPERS =================
@@ -58,9 +57,9 @@ def apply_daily_credit(uid: int):
         return True
     return False
 
-def progress_bar(sent, total, length=20):
-    filled = int(length * sent / total) if total else 0
-    return "█" * filled + "░" * (length - filled)
+def progress_bar(done, total, size=20):
+    filled = int(size * done / total) if total else 0
+    return "█" * filled + "░" * (size - filled)
 
 # ================= INTRO =================
 async def hacker_intro(update: Update):
@@ -116,7 +115,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     uid = update.effective_user.id
 
-    # ignore non-numeric text silently
+    # silent ignore non-numeric
     if not text.isdigit():
         return
 
@@ -162,7 +161,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ Search successful\n💳 Remaining: {remaining}\n\n"
-        f"```json\n{json.dumps(result, indent=4)}\n```",
+        f"```json\n{json.dumps(result, indent=4, ensure_ascii=False)}\n```",
         parse_mode="Markdown"
     )
 
@@ -176,23 +175,22 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "sent": 0,
         "failed": 0,
         "total": users.count_documents({}),
-        "chat_id": update.effective_chat.id,
+        "progress_msg": None,
     })
 
     context.user_data["awaiting_broadcast"] = True
 
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛑 Cancel Broadcast", callback_data="cancel_broadcast")]
-    ])
-
     msg = await update.message.reply_text(
-        "📢 Broadcast started\nWaiting for message...",
-        reply_markup=kb
+        "📢 Broadcast started\nSend message or photo to broadcast",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛑 Cancel Broadcast", callback_data="cancel_broadcast")]
+        ])
     )
 
-    broadcast_state["progress_msg_id"] = msg.message_id
+    broadcast_state["progress_msg"] = msg
 
 async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 🔒 HARD GUARD (this fixes everything)
     if not is_admin(update.effective_user.id):
         return
     if not context.user_data.get("awaiting_broadcast"):
@@ -218,15 +216,11 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bar = progress_bar(broadcast_state["sent"], broadcast_state["total"])
         percent = int((broadcast_state["sent"] / broadcast_state["total"]) * 100)
 
-        await context.bot.edit_message_text(
-            chat_id=broadcast_state["chat_id"],
-            message_id=broadcast_state["progress_msg_id"],
-            text=(
-                f"📢 Broadcasting…\n\n"
-                f"{bar} {percent}%\n"
-                f"Sent: {broadcast_state['sent']} / {broadcast_state['total']}\n"
-                f"Failed: {broadcast_state['failed']}"
-            ),
+        await broadcast_state["progress_msg"].edit_text(
+            f"📢 Broadcasting…\n\n"
+            f"{bar} {percent}%\n"
+            f"Sent: {broadcast_state['sent']} / {broadcast_state['total']}\n"
+            f"Failed: {broadcast_state['failed']}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🛑 Cancel Broadcast", callback_data="cancel_broadcast")]
             ])
@@ -238,6 +232,7 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     broadcast_state["running"] = False
+    context.user_data["awaiting_broadcast"] = False
     await update.callback_query.answer("Broadcast stopped")
     await update.callback_query.edit_message_text("🛑 Broadcast cancelled")
 
@@ -249,11 +244,9 @@ def main():
     app.add_handler(CommandHandler("broadcast", broadcast_start))
     app.add_handler(CallbackQueryHandler(cancel_broadcast, pattern="cancel_broadcast"))
 
-    # IMPORTANT: broadcast content ONLY for admin
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, broadcast_content))
-
-    # search handler ONLY for text numbers
+    # 🔴 ORDER MATTERS (THIS IS THE FIX)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, broadcast_content))
 
     app.run_polling()
 
