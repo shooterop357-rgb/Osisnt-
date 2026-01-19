@@ -107,7 +107,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 UserID: {uid}\n"
         f"💳 Credits: {credits}\n\n"
         "💡 Send a mobile number to fetch details\n\n"
-        "• Indian Numbers Only\n"
+        "• Indian Number (auto-detect)\n"
         "• Name / Address\n"
         "• Operator / Circle\n"
         "• Alternate Numbers\n"
@@ -193,6 +193,7 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 🔒 CRITICAL FIX: ignore unless broadcast mode
     if not context.user_data.get("awaiting_broadcast"):
         return
 
@@ -206,18 +207,30 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
         try:
             if photo:
-                await context.bot.send_photo(u["_id"], photo=photo, caption=text, parse_mode=None)
+                await context.bot.send_photo(
+                    u["_id"],
+                    photo=photo,
+                    caption=text,
+                    parse_mode=None
+                )
             else:
-                await context.bot.send_message(u["_id"], text, parse_mode=None)
+                await context.bot.send_message(
+                    u["_id"],
+                    text,
+                    parse_mode=None
+                )
             broadcast_state["sent"] += 1
         except:
             broadcast_state["failed"] += 1
+
         await asyncio.sleep(0.05)
 
     broadcast_state["running"] = False
 
     await update.message.reply_text(
-        f"✅ Broadcast finished\nSent: {broadcast_state['sent']}\nFailed: {broadcast_state['failed']}"
+        f"✅ Broadcast finished\n"
+        f"Sent: {broadcast_state['sent']}\n"
+        f"Failed: {broadcast_state['failed']}"
     )
 
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -229,11 +242,28 @@ async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("broadcast", broadcast_start))
+
+    # Cancel broadcast
     app.add_handler(CallbackQueryHandler(cancel_broadcast, pattern="cancel_broadcast"))
-    app.add_handler(MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), broadcast_content))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
+
+    # Broadcast content (guarded)
+    app.add_handler(
+        MessageHandler(
+            (filters.TEXT | filters.PHOTO) & ~filters.COMMAND,
+            broadcast_content
+        )
+    )
+
+    # Search handler
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            search_handler
+        )
+    )
 
     app.run_polling()
 
