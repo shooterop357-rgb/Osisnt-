@@ -3,7 +3,7 @@ import re
 import json
 import asyncio
 import requests
-from datetime import datetime, date
+from datetime import datetime, date, time
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -30,7 +30,7 @@ db = mongo["ghost_eye"]
 users = db["users"]
 protected = db["protected"]
 
-# ================= GLOBAL (ONLY ONCE) =================
+# ================= GLOBAL =================
 broadcast_state = {
     "running": False,
     "sent": 0,
@@ -46,30 +46,22 @@ def is_admin(uid: int) -> bool:
 def is_valid_number(text: str) -> bool:
     return re.fullmatch(r"[6-9]\d{9}", text) is not None
 
-def apply_daily_credit(uid: int):
-    today = date.today().isoformat()
-    user = users.find_one({"_id": uid})
-    if user and user.get("last_daily") != today:
+# ================= DAILY CREDIT JOB =================
+async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
+    for u in users.find({"unlimited": {"$ne": True}}):
         users.update_one(
-            {"_id": uid},
-            {"$inc": {"credits": 1}, "$set": {"last_daily": today}}
+            {"_id": u["_id"]},
+            {"$inc": {"credits": 1}}
         )
-        return True
-    return False
-
-# ================= INTRO =================
-async def hacker_intro(update: Update):
-    steps = [
-        "🔐 Secure channel initialized…",
-        "🧠 OSINT modules online",
-        "🗄️ Database synchronized",
-        "🚀 Ghost Eye core loaded",
-    ]
-    msg = await update.message.reply_text("⌛ Initializing…")
-    for s in steps:
-        await asyncio.sleep(0.25)
-        await msg.edit_text(s)
-    await msg.delete()
+        try:
+            await context.bot.send_message(
+                u["_id"],
+                "🎁 Daily Free Credit!\n\n"
+                "You have received 1 free credit.\n"
+                "Send /start to check your balance."
+            )
+        except:
+            pass
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -83,13 +75,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "created_at": datetime.utcnow()
         })
 
-    daily = apply_daily_credit(uid)
-    await hacker_intro(update)
-
     user = users.find_one({"_id": uid})
     credits = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
 
-    msg = (
+    await update.message.reply_text(
         "🌐 Welcome to Ghost Eye OSINT 🌐\n\n"
         f"👤 UserID: {uid}\n"
         f"💳 Credits: {credits}\n\n"
@@ -98,13 +87,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Name / Address\n"
         "• Operator / Circle\n"
         "• Alt Numbers\n"
-        "• Vehicle / UPI / E"
+        "• Vehicle / UPI / Etc"
     )
-
-    if daily:
-        msg += "\n\n🎁 You received 1 daily free credit"
-
-    await update.message.reply_text(msg)
 
 # ================= SEARCH =================
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -159,10 +143,6 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
 
-    if broadcast_state["running"]:
-        await update.message.reply_text("⚠️ Broadcast already running")
-        return
-
     broadcast_state.update({
         "running": True,
         "sent": 0,
@@ -171,24 +151,21 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "progress_msg": None,
     })
 
-    context.user_data["awaiting_broadcast"] = True
-
     msg = await update.message.reply_text(
-        "📢 Broadcast mode ON\n\n➡️ Send text or photo to broadcast",
+        "📢 Broadcast mode ON\nSend text or photo",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🛑 Cancel Broadcast", callback_data="cancel_broadcast")]
         ])
     )
-
     broadcast_state["progress_msg"] = msg
 
 async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
-    if not context.user_data.get("awaiting_broadcast"):
+    if not broadcast_state["running"]:
         return
-
-    context.user_data["awaiting_broadcast"] = False
+    if update.message.text and update.message.text.startswith("/"):
+        return
 
     text = update.message.caption or update.message.text
     photo = update.message.photo[-1].file_id if update.message.photo else None
@@ -213,20 +190,66 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     broadcast_state["running"] = False
-    context.user_data["awaiting_broadcast"] = False
-    await update.callback_query.answer("Stopped")
     await update.callback_query.edit_message_text("🛑 Broadcast cancelled")
+
+# ================= ADMIN =================
+async def add_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    uid, amt = map(int, context.args)
+    users.update_one({"_id": uid}, {"$inc": {"credits": amt}}, upsert=True)
+    await update.message.reply_text("✅ Credits added")
+
+async def remove_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    uid, amt = map(int, context.args)
+    users.update_one({"_id": uid}, {"$inc": {"credits": -amt}})
+    await update.message.reply_text("✅ Credits removed")
+
+async def unlimited(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    uid = int(context.args[0])
+    mode = context.args[1].lower() == "on"
+    users.update_one({"_id": uid}, {"$set": {"unlimited": mode}})
+    await update.message.reply_text("✅ Unlimited updated")
+
+async def protect_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    protected.insert_one({"number": context.args[0]})
+    await update.message.reply_text("✅ Number protected")
+
+async def unprotect_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    protected.delete_one({"number": context.args[0]})
+    await update.message.reply_text("✅ Number unprotected")
 
 # ================= MAIN =================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("broadcast", broadcast_start))
+    app.add_handler(CommandHandler("add", add_credit))
+    app.add_handler(CommandHandler("remove", remove_credit))
+    app.add_handler(CommandHandler("unlimited", unlimited))
+    app.add_handler(CommandHandler("protect", protect_number))
+    app.add_handler(CommandHandler("unprotect", unprotect_number))
     app.add_handler(CallbackQueryHandler(cancel_broadcast, pattern="cancel_broadcast"))
 
+    # handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
+
+    # daily job (12:00 AM)
+    app.job_queue.run_daily(
+        daily_credit_job,
+        time=time(hour=0, minute=0, second=0)
+    )
 
     app.run_polling()
 
