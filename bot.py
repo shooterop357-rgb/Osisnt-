@@ -3,7 +3,7 @@ import re
 import json
 import asyncio
 import requests
-from datetime import datetime, date
+from datetime import datetime, date, time
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -48,6 +48,10 @@ def is_valid_number(text: str) -> bool:
         return False
     return re.fullmatch(r"[6-9]\d{9}", text) is not None
 
+def progress_bar(done, total, size=20):
+    filled = int(size * done / total) if total else 0
+    return "█" * filled + "░" * (size - filled)
+
 def apply_daily_credit(uid: int) -> bool:
     today = date.today().isoformat()
     user = users.find_one({"_id": uid})
@@ -61,9 +65,27 @@ def apply_daily_credit(uid: int) -> bool:
         return True
     return False
 
-def progress_bar(done, total, size=20):
-    filled = int(size * done / total) if total else 0
-    return "█" * filled + "░" * (size - filled)
+# ================= DAILY JOB =================
+async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
+    today = date.today().isoformat()
+
+    for user in users.find():
+        uid = user["_id"]
+        if user.get("last_daily") == today:
+            continue
+
+        users.update_one(
+            {"_id": uid},
+            {"$inc": {"credits": 1}, "$set": {"last_daily": today}}
+        )
+
+        try:
+            await context.bot.send_message(
+                uid,
+                "🎁 You received 1 free daily credit\n\nType /start to claim"
+            )
+        except:
+            pass
 
 # ================= INTRO =================
 async def hacker_intro(update: Update):
@@ -116,6 +138,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= SEARCH =================
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if broadcast_state["running"] and is_admin(update.effective_user.id):
+        return
+
     text = update.message.text.strip()
     uid = update.effective_user.id
 
@@ -153,9 +178,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     result = data.get("result", [])
     if not result:
-        await update.message.reply_text(
-            "⚠️ No data found\n💳 Credit not deducted"
-        )
+        await update.message.reply_text("⚠️ No data found\n💳 Credit not deducted")
         return
 
     if not user.get("unlimited"):
@@ -206,6 +229,7 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for u in users.find():
         if not broadcast_state["running"]:
             break
+
         try:
             if photo:
                 await context.bot.send_photo(u["_id"], photo=photo, caption=text)
@@ -231,12 +255,13 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await asyncio.sleep(0.05)
 
-    broadcast_state["running"] = False
-    await progress.edit_text(
-        f"✅ Broadcast finished\n"
-        f"Sent: {broadcast_state['sent']}\n"
-        f"Failed: {broadcast_state['failed']}"
-    )
+    if broadcast_state["running"]:
+        broadcast_state["running"] = False
+        await progress.edit_text(
+            f"✅ Broadcast finished\n\n"
+            f"Sent: {broadcast_state['sent']}\n"
+            f"Failed: {broadcast_state['failed']}"
+        )
 
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     broadcast_state["running"] = False
@@ -292,6 +317,9 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
+
+    # 🕛 DAILY CREDIT SCHEDULER (SAFE)
+    app.job_queue.run_daily(daily_credit_job, time=time(0, 0))
 
     app.run_polling()
 
