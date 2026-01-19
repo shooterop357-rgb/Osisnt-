@@ -11,8 +11,8 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    ContextTypes,
     CallbackQueryHandler,
+    ContextTypes,
     filters,
 )
 from pymongo import MongoClient
@@ -24,8 +24,6 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 API_URL = "https://mynkapi.amit1100941.workers.dev/api"
 API_KEY = os.getenv("API_KEY")
-
-IST = ZoneInfo("Asia/Kolkata")
 
 # ================= DB =================
 mongo = MongoClient(MONGO_URI)
@@ -47,40 +45,29 @@ def is_admin(uid: int) -> bool:
     return uid == ADMIN_ID
 
 def is_valid_number(text: str) -> bool:
+    if not text.isdigit():
+        return False
     return re.fullmatch(r"[6-9]\d{9}", text) is not None
 
 def progress_bar(done, total, size=20):
     filled = int(size * done / total) if total else 0
     return "█" * filled + "░" * (size - filled)
 
-def apply_daily_credit(uid: int) -> bool:
-    today = date.today().isoformat()
-    user = users.find_one({"_id": uid})
-    if not user:
-        return False
-    if user.get("last_daily") != today:
-        users.update_one(
-            {"_id": uid},
-            {"$inc": {"credits": 1}, "$set": {"last_daily": today}}
-        )
-        return True
-    return False
-
-# ================= DAILY AUTO CREDIT (9 AM IST) =================
+# ================= DAILY CREDIT JOB =================
 async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
     today = date.today().isoformat()
     for user in users.find():
-        uid = user["_id"]
         if user.get("last_daily") == today:
             continue
 
         users.update_one(
-            {"_id": uid},
+            {"_id": user["_id"]},
             {"$inc": {"credits": 1}, "$set": {"last_daily": today}}
         )
+
         try:
             await context.bot.send_message(
-                uid,
+                user["_id"],
                 "🎁 You received 1 free daily credit\n\nType /start to claim"
             )
         except:
@@ -93,38 +80,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not users.find_one({"_id": uid}):
         users.insert_one({
             "_id": uid,
-            "credits": 2,
+            "credits": 0,
             "unlimited": False,
             "created_at": datetime.utcnow()
         })
 
-    daily = apply_daily_credit(uid)
     user = users.find_one({"_id": uid})
     credits = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
 
-    msg = (
+    await update.message.reply_text(
         "🌐 Welcome to Ghost Eye OSINT 🌐\n\n"
         f"👤 UserID: {uid}\n"
         f"💳 Credits: {credits}\n\n"
-        "💡 Send number to fetch details\n\n"
-        "• Number (without +91)\n"
+        "💡 Send a mobile number to fetch details\n\n"
+        "• Indian Number (10 digits)\n"
         "• Name / Address\n"
         "• Operator / Circle\n"
-        "• Alt Numbers\n"
-        "• Vehicle / UPI / Other"
+        "• Alternate Numbers\n"
+        "• Vehicle / UPI / Other linked data"
     )
-
-    if daily:
-        msg += "\n\n🎁 You received 1 free daily credit"
-
-    await update.message.reply_text(msg)
 
 # ================= SEARCH =================
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 🔥 HARD BLOCK SEARCH FOR ADMIN DURING BROADCAST
-    if broadcast_state["running"] and is_admin(update.effective_user.id):
-        return
-
     text = update.message.text.strip()
     uid = update.effective_user.id
 
@@ -162,7 +139,9 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     result = data.get("result", [])
     if not result:
-        await update.message.reply_text("⚠️ No data found\n💳 Credit not deducted")
+        await update.message.reply_text(
+            "⚠️ No data found\n💳 Credit not deducted"
+        )
         return
 
     if not user.get("unlimited"):
@@ -227,28 +206,35 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bar = progress_bar(broadcast_state["sent"], broadcast_state["total"])
         percent = int((broadcast_state["sent"] / broadcast_state["total"]) * 100)
 
-        await progress.edit_text(
-            f"📢 Broadcasting…\n\n"
-            f"{bar} {percent}%\n"
-            f"Sent: {broadcast_state['sent']} / {broadcast_state['total']}\n"
-            f"Failed: {broadcast_state['failed']}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✖️ Cancel Broadcast", callback_data="cancel_broadcast")]
-            ])
-        )
+        try:
+            await progress.edit_text(
+                f"📢 Broadcasting…\n\n"
+                f"{bar} {percent}%\n"
+                f"Sent: {broadcast_state['sent']} / {broadcast_state['total']}\n"
+                f"Failed: {broadcast_state['failed']}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✖️ Cancel Broadcast", callback_data="cancel_broadcast")]
+                ])
+            )
+        except:
+            pass
+
         await asyncio.sleep(0.05)
 
-    if broadcast_state["running"]:
-        broadcast_state["running"] = False
-        await progress.edit_text(
-            f"✅ Broadcast finished\n\n"
-            f"Sent: {broadcast_state['sent']}\n"
-            f"Failed: {broadcast_state['failed']}"
-        )
+    broadcast_state["running"] = False
+    await progress.edit_text(
+        f"✅ Broadcast finished\n\n"
+        f"Sent: {broadcast_state['sent']}\n"
+        f"Failed: {broadcast_state['failed']}"
+    )
 
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer("Stopping broadcast…")
     broadcast_state["running"] = False
-    await update.callback_query.edit_message_text("✖️ Broadcast cancelled")
+    try:
+        await update.callback_query.edit_message_text("✖️ Broadcast cancelled")
+    except:
+        pass
 
 # ================= ADMIN =================
 async def add_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -298,12 +284,14 @@ def main():
     app.add_handler(CommandHandler("unprotect", unprotect_number))
     app.add_handler(CallbackQueryHandler(cancel_broadcast, pattern="cancel_broadcast"))
 
-    # 🔥 ORDER MATTERS
-    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
+    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
 
-    # 🕘 DAILY AUTO CREDIT – 9:00 AM IST
-    app.job_queue.run_daily(daily_credit_job, time=time(9, 0, tzinfo=IST))
+    # Daily credit at 9 AM IST
+    app.job_queue.run_daily(
+        daily_credit_job,
+        time=time(9, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    )
 
     app.run_polling()
 
