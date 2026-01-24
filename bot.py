@@ -7,6 +7,7 @@ from datetime import datetime, date, time
 from zoneinfo import ZoneInfo
 
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -19,14 +20,13 @@ from pymongo import MongoClient
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
+API_KEY = os.getenv("API_KEY")
 
 ADMIN_IDS = set(
     int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()
 )
 
 API_URL = "https://mynkapi.amit1100941.workers.dev/api"
-API_KEY = os.getenv("API_KEY")
-
 IST = ZoneInfo("Asia/Kolkata")
 
 # ================= DB =================
@@ -37,7 +37,7 @@ protected = db["protected"]
 
 # ================= BROADCAST STATE =================
 broadcast_state = {
-    "running": False,
+    "awaiting_content": False,
     "sent": 0,
     "failed": 0,
 }
@@ -57,25 +57,27 @@ def split_text(text, limit=4096):
     return [text[i:i+limit] for i in range(0, len(text), limit)]
 
 async def safe_reply(update: Update, text: str):
+    await update.message.chat.send_action(ChatAction.TYPING)
     if len(text) <= 4096:
         await update.message.reply_text(text)
     else:
         for part in split_text(text):
             await update.message.reply_text(part)
 
-# ================= HACKER INTRO (UNCHANGED) =================
+# ================= HACKER INTRO =================
 async def hacker_intro(update: Update):
-    msg = await update.message.reply_text("🔐 Initializing Ghost Eye OSINT [★☆☆☆☆]")
+    msg = await update.message.reply_text("🔐 Initializing Ghost Eye OSINT")
     await asyncio.sleep(0.4)
-    await msg.edit_text("🧠 Loading Modules [★★☆☆☆]")
+    await msg.edit_text("🧠 Loading Modules")
     await asyncio.sleep(0.4)
-    await msg.edit_text("🗄️ Syncing Database [★★★☆☆]")
+    await msg.edit_text("🗄️ Syncing Database")
     await asyncio.sleep(0.4)
-    await msg.edit_text("🌐 Connecting Services [★★★★☆]")
+    await msg.edit_text("🌐 Connecting Services")
     await asyncio.sleep(0.4)
-    await msg.edit_text("🚀 System Online [★★★★★]")
+    await msg.edit_text("🚀 System Online")
+    return msg
 
-# ================= DAILY CREDIT JOB =================
+# ================= DAILY CREDIT =================
 async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
     today = date.today().isoformat()
     for user in users.find():
@@ -98,9 +100,7 @@ async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-
-    # broadcast reset (FIX)
-    broadcast_state["running"] = False
+    broadcast_state["awaiting_content"] = False
 
     if not users.find_one({"_id": uid}):
         users.insert_one({
@@ -110,7 +110,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "created_at": datetime.utcnow()
         })
 
-    await hacker_intro(update)
+    intro_msg = await hacker_intro(update)
+    await asyncio.sleep(0.8)
+    await intro_msg.delete()
 
     user = users.find_one({"_id": uid})
     credits = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
@@ -119,12 +121,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🌐 Welcome to Ghost Eye OSINT 🌐\n\n"
         f"👤 UserID: {uid}\n"
         f"💳 Credits: {credits}\n\n"
-        "📞 Send 10 digit number to search"
+        "💡 Send number to fetch details\n\n"
+        "• Number (without +91)\n"
+        "• Name / Address\n"
+        "• Operator / Circle\n"
+        "• Alt Numbers\n"
+        "• Vehicle / UPI / Etc…"
     )
 
-# ================= SEARCH (JSON ONLY) =================
+# ================= SEARCH =================
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if broadcast_state["running"]:
+    if broadcast_state["awaiting_content"]:
         return
 
     text = update.message.text.strip()
@@ -147,6 +154,8 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user.get("unlimited") and user.get("credits", 0) <= 0:
         await update.message.reply_text("❌ No credits left")
         return
+
+    await update.message.chat.send_action(ChatAction.TYPING)
 
     try:
         r = requests.get(API_URL, params={
@@ -175,7 +184,7 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
 
-    broadcast_state["running"] = True
+    broadcast_state["awaiting_content"] = True
     broadcast_state["sent"] = 0
     broadcast_state["failed"] = 0
 
@@ -184,16 +193,18 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not broadcast_state["running"]:
+    if not broadcast_state["awaiting_content"]:
         return
     if not is_admin(update.effective_user.id):
         return
+
+    broadcast_state["awaiting_content"] = False
 
     text = update.message.caption or update.message.text
     photo = update.message.photo[-1].file_id if update.message.photo else None
 
     total = users.count_documents({})
-    progress_msg = await update.message.reply_text("📡 Broadcasting started…")
+    progress = await update.message.reply_text("📡 Broadcasting started…")
 
     for user in users.find():
         if user["_id"] == update.effective_user.id:
@@ -207,23 +218,9 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             broadcast_state["failed"] += 1
 
-        try:
-            percent = int((broadcast_state["sent"] / total) * 100) if total else 0
-            bar = "█" * (percent // 10) + "░" * (10 - percent // 10)
-            await progress_msg.edit_text(
-                f"📡 Broadcasting…\n\n{bar} {percent}%\n"
-                f"📤 Sent: {broadcast_state['sent']}\n"
-                f"❌ Failed: {broadcast_state['failed']}\n"
-                f"👥 Total: {total}"
-            )
-        except:
-            pass
-
         await asyncio.sleep(0.05)
 
-    broadcast_state["running"] = False
-
-    await progress_msg.edit_text(
+    await progress.edit_text(
         "✅ Broadcast Finished\n\n"
         f"📤 Sent: {broadcast_state['sent']}\n"
         f"❌ Failed: {broadcast_state['failed']}\n"
@@ -252,15 +249,8 @@ def main():
     app.add_handler(CommandHandler("add", add_credit))
     app.add_handler(CommandHandler("unlimited", unlimited))
 
-    app.add_handler(MessageHandler(
-        (filters.TEXT | filters.PHOTO) & ~filters.COMMAND,
-        broadcast_content
-    ))
-
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        search_handler
-    ))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
+    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
 
     app.job_queue.run_daily(
         daily_credit_job,
