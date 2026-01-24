@@ -7,12 +7,11 @@ from datetime import datetime, date, time
 from zoneinfo import ZoneInfo
 from io import BytesIO
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -55,31 +54,38 @@ def clean_number(text: str) -> str:
 def split_text(text, limit=4096):
     return [text[i:i+limit] for i in range(0, len(text), limit)]
 
-def format_result(item: dict) -> str:
-    lines = ["🔍 Result Found\n"]
-    mapping = {
-        "name": "👤 Name",
-        "father_name": "👨 Father",
-        "mobile": "📞 Mobile",
-        "alt_mobile": "📱 Alt Mobile",
-        "email": "📧 Email",
-        "address": "🏠 Address",
-        "circle": "📡 Circle",
-        "id_number": "🆔 ID"
-    }
-    for key, label in mapping.items():
-        if item.get(key):
-            lines.append(f"{label}: {item[key]}")
-    return "\n".join(lines)
+async def safe_reply(update: Update, text: str):
+    if len(text) <= 4096:
+        await update.message.reply_text(text)
+    else:
+        for part in split_text(text):
+            await update.message.reply_text(part)
+
+def progress_text(sent, failed, total):
+    percent = int((sent / total) * 100) if total else 0
+    bar_len = 10
+    filled = int(bar_len * percent / 100)
+    bar = "█" * filled + "░" * (bar_len - filled)
+
+    return (
+        "📡 Broadcasting…\n\n"
+        f"{bar} {percent}%\n"
+        f"📤 Sent: {sent}\n"
+        f"❌ Failed: {failed}\n"
+        f"👥 Total: {total}"
+    )
 
 # ================= HACKER INTRO =================
 async def hacker_intro(update: Update):
-    await update.message.reply_text(
-        "🔐 Ghost Eye OSINT Initialized\n"
-        "🧠 Modules Loaded\n"
-        "🗄️ Database Synced\n"
-        "🚀 System Online"
-    )
+    msg = await update.message.reply_text("🔐 Initializing Ghost Eye OSINT [★☆☆☆☆]")
+    await asyncio.sleep(0.4)
+    await msg.edit_text("🧠 Loading Modules [★★☆☆☆]")
+    await asyncio.sleep(0.4)
+    await msg.edit_text("🗄️ Syncing Database [★★★☆☆]")
+    await asyncio.sleep(0.4)
+    await msg.edit_text("🌐 Connecting Services [★★★★☆]")
+    await asyncio.sleep(0.4)
+    await msg.edit_text("🚀 System Online [★★★★★]")
 
 # ================= DAILY CREDIT JOB =================
 async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
@@ -96,9 +102,7 @@ async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 user["_id"],
-                "🎁 Daily Free Credit Added\n\n"
-                "💳 +1 Credit\n"
-                "Type /start to check"
+                "🎁 Daily Free Credit Added\n\n💳 +1 Credit\nType /start to check"
             )
         except:
             pass
@@ -127,7 +131,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📞 Send 10 digit number to search"
     )
 
-# ================= SEARCH =================
+# ================= SEARCH (JSON ONLY) =================
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if broadcast_state["running"]:
         return
@@ -171,14 +175,8 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user.get("unlimited"):
         users.update_one({"_id": uid}, {"$inc": {"credits": -1}})
 
-    for item in result:
-        msg = format_result(item)
-        if len(msg) <= 4096:
-            await update.message.reply_text(msg)
-        else:
-            file = BytesIO(json.dumps(item, indent=2).encode())
-            file.name = "result.json"
-            await update.message.reply_document(file)
+    json_text = json.dumps(result, indent=2, ensure_ascii=False)
+    await safe_reply(update, f"```json\n{json_text}\n```")
 
 # ================= BROADCAST =================
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -190,8 +188,7 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     broadcast_state["failed"] = 0
 
     await update.message.reply_text(
-        "📢 Broadcast Mode ON\n\n"
-        "Send text or photo to broadcast."
+        "📢 Broadcast Mode ON\n\nSend text or photo to broadcast."
     )
 
 async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,6 +199,9 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.caption or update.message.text
     photo = update.message.photo[-1].file_id if update.message.photo else None
+
+    total = users.count_documents({})
+    progress_msg = await update.message.reply_text("📡 Broadcasting started…")
 
     for user in users.find():
         if user["_id"] == update.effective_user.id:
@@ -215,14 +215,26 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             broadcast_state["failed"] += 1
 
+        try:
+            await progress_msg.edit_text(
+                progress_text(
+                    broadcast_state["sent"],
+                    broadcast_state["failed"],
+                    total
+                )
+            )
+        except:
+            pass
+
         await asyncio.sleep(0.05)
 
     broadcast_state["running"] = False
 
-    await update.message.reply_text(
+    await progress_msg.edit_text(
         "✅ Broadcast Finished\n\n"
         f"📤 Sent: {broadcast_state['sent']}\n"
-        f"❌ Failed: {broadcast_state['failed']}"
+        f"❌ Failed: {broadcast_state['failed']}\n"
+        f"👥 Total: {total}"
     )
 
 # ================= ADMIN =================
@@ -247,8 +259,16 @@ def main():
     app.add_handler(CommandHandler("add", add_credit))
     app.add_handler(CommandHandler("unlimited", unlimited))
 
-    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
+    # broadcast FIRST
+    app.add_handler(MessageHandler(
+        (filters.TEXT | filters.PHOTO) & ~filters.COMMAND,
+        broadcast_content
+    ))
+
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        search_handler
+    ))
 
     app.job_queue.run_daily(
         daily_credit_job,
