@@ -5,7 +5,6 @@ import asyncio
 import requests
 from datetime import datetime, date, time
 from zoneinfo import ZoneInfo
-from io import BytesIO
 
 from telegram import Update
 from telegram.ext import (
@@ -20,7 +19,10 @@ from pymongo import MongoClient
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+ADMIN_IDS = set(
+    int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()
+)
 
 API_URL = "https://mynkapi.amit1100941.workers.dev/api"
 API_KEY = os.getenv("API_KEY")
@@ -42,7 +44,7 @@ broadcast_state = {
 
 # ================= HELPERS =================
 def is_admin(uid: int) -> bool:
-    return uid == ADMIN_ID
+    return uid in ADMIN_IDS
 
 def is_valid_number(text: str) -> bool:
     digits = re.sub(r"\D", "", text)
@@ -61,21 +63,7 @@ async def safe_reply(update: Update, text: str):
         for part in split_text(text):
             await update.message.reply_text(part)
 
-def progress_text(sent, failed, total):
-    percent = int((sent / total) * 100) if total else 0
-    bar_len = 10
-    filled = int(bar_len * percent / 100)
-    bar = "█" * filled + "░" * (bar_len - filled)
-
-    return (
-        "📡 Broadcasting…\n\n"
-        f"{bar} {percent}%\n"
-        f"📤 Sent: {sent}\n"
-        f"❌ Failed: {failed}\n"
-        f"👥 Total: {total}"
-    )
-
-# ================= HACKER INTRO =================
+# ================= HACKER INTRO (UNCHANGED) =================
 async def hacker_intro(update: Update):
     msg = await update.message.reply_text("🔐 Initializing Ghost Eye OSINT [★☆☆☆☆]")
     await asyncio.sleep(0.4)
@@ -111,6 +99,9 @@ async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
+    # broadcast reset (FIX)
+    broadcast_state["running"] = False
+
     if not users.find_one({"_id": uid}):
         users.insert_one({
             "_id": uid,
@@ -140,6 +131,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
     if not is_valid_number(text):
+        await update.message.reply_text("❌ Please send a valid 10 digit number")
         return
 
     number = clean_number(text)
@@ -216,12 +208,13 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             broadcast_state["failed"] += 1
 
         try:
+            percent = int((broadcast_state["sent"] / total) * 100) if total else 0
+            bar = "█" * (percent // 10) + "░" * (10 - percent // 10)
             await progress_msg.edit_text(
-                progress_text(
-                    broadcast_state["sent"],
-                    broadcast_state["failed"],
-                    total
-                )
+                f"📡 Broadcasting…\n\n{bar} {percent}%\n"
+                f"📤 Sent: {broadcast_state['sent']}\n"
+                f"❌ Failed: {broadcast_state['failed']}\n"
+                f"👥 Total: {total}"
             )
         except:
             pass
@@ -259,7 +252,6 @@ def main():
     app.add_handler(CommandHandler("add", add_credit))
     app.add_handler(CommandHandler("unlimited", unlimited))
 
-    # broadcast FIRST
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.PHOTO) & ~filters.COMMAND,
         broadcast_content
