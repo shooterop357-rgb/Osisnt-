@@ -69,7 +69,6 @@ async def hacker_intro(update: Update):
 # ================= DAILY CREDIT =================
 async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
     today = date.today().isoformat()
-    expiry = "Expires in 24 hours"
 
     for user in users.find():
         if user.get("last_daily") == today:
@@ -85,7 +84,7 @@ async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
                 user["_id"],
                 "🎁 Daily Free Credit Added\n\n"
                 "💳 +1 Credit\n"
-                f"⏳ {expiry}\n\n"
+                "⏳ Expires in 24 hours\n\n"
                 "Type /start to use"
             )
         except:
@@ -153,8 +152,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💳 Buy Credits", url="https://t.me/Frx_Shooter")]
         ])
         await update.message.reply_text(
-            "❌ No credits left\n\n"
-            "Tap below to buy credits",
+            "❌ No credits left\n\nTap below to buy credits",
             reply_markup=keyboard
         )
         return
@@ -183,14 +181,15 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     credits_left = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
     json_text = json.dumps(result, indent=2, ensure_ascii=False)
 
-    await update.message.reply_text(
+    # ===== FINAL JOHNSON OUTPUT (EXACT LOOK) =====
+    final_message = (
         "✅ Search successful\n"
         f"💳 Remaining: {credits_left}\n\n"
-        "JSON"
+        "JSON\n"
+        f"{json_text}"
     )
 
-    # Johnson-style output (Telegram native)
-    await update.message.reply_text(json_text)
+    await update.message.reply_text(final_message)
 
 # ================= BROADCAST =================
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
