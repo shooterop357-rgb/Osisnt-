@@ -6,7 +6,7 @@ import requests
 from datetime import datetime, date, time
 from zoneinfo import ZoneInfo
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
@@ -77,7 +77,7 @@ async def hacker_intro(update: Update):
     await msg.edit_text("🚀 System Online")
     return msg
 
-# ================= DAILY CREDIT (FIXED) =================
+# ================= DAILY CREDIT =================
 async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
     today = date.today().isoformat()
     expiry = "Today 11:59 PM IST"
@@ -88,12 +88,7 @@ async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
 
         users.update_one(
             {"_id": user["_id"]},
-            {
-                "$set": {
-                    "credits": 1,
-                    "last_daily": today
-                }
-            }
+            {"$set": {"credits": 1, "last_daily": today}}
         )
 
         try:
@@ -130,12 +125,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🌐 Welcome to Ghost Eye OSINT 🌐\n\n"
         f"👤 UserID: {uid}\n"
         f"💳 Credits: {credits}\n\n"
-        "💡 Send number to fetch details\n\n"
-        "• Number (without +91)\n"
-        "• Name / Address\n"
-        "• Operator / Circle\n"
-        "• Alt Numbers\n"
-        "• Vehicle / UPI / Etc…"
+        "💡 Send number to fetch details"
     )
 
 # ================= SEARCH =================
@@ -160,8 +150,18 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         return
 
+    # 🔥 CREDIT OVER FIX (INLINE BUTTON)
     if not user.get("unlimited") and user.get("credits", 0) <= 0:
-        await update.message.reply_text("❌ No credits left")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Buy Credits", url="https://t.me/Frx_Shooter")]
+        ])
+
+        await update.message.reply_text(
+            "❌ No credits left\n\n"
+            "💳 Buy more credits\n"
+            "📩 Contact: Frx_Shooter",
+            reply_markup=keyboard
+        )
         return
 
     await update.message.chat.send_action(ChatAction.TYPING)
@@ -188,10 +188,10 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     credits_left = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
     json_text = json.dumps(result, indent=2, ensure_ascii=False)
 
+    # 🔥 JOHNSON / JSON FIX
     response = (
         "✅ Search successful\n"
         f"💳 Remaining: {credits_left}\n\n"
-        "JSON\n"
         "```json\n"
         f"{json_text}\n"
         "```"
@@ -223,7 +223,6 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.caption or update.message.text
     photo = update.message.photo[-1].file_id if update.message.photo else None
 
-    total = users.count_documents({})
     progress = await update.message.reply_text("📡 Broadcasting started…")
 
     for user in users.find():
@@ -243,8 +242,7 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await progress.edit_text(
         "✅ Broadcast Finished\n\n"
         f"📤 Sent: {broadcast_state['sent']}\n"
-        f"❌ Failed: {broadcast_state['failed']}\n"
-        f"👥 Total: {total}"
+        f"❌ Failed: {broadcast_state['failed']}"
     )
 
 # ================= ADMIN =================
@@ -269,13 +267,11 @@ def main():
     app.add_handler(CommandHandler("add", add_credit))
     app.add_handler(CommandHandler("unlimited", unlimited))
 
-    # 🔥 Broadcast FIRST
     app.add_handler(
         MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content),
         group=0
     )
 
-    # 🔥 Search AFTER
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler),
         group=1
