@@ -77,22 +77,31 @@ async def hacker_intro(update: Update):
     await msg.edit_text("🚀 System Online")
     return msg
 
-# ================= DAILY CREDIT =================
+# ================= DAILY CREDIT (FIXED) =================
 async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
     today = date.today().isoformat()
+    expiry = "Today 11:59 PM IST"
+
     for user in users.find():
         if user.get("last_daily") == today:
             continue
 
         users.update_one(
             {"_id": user["_id"]},
-            {"$inc": {"credits": 1}, "$set": {"last_daily": today}}
+            {
+                "$set": {
+                    "credits": 1,
+                    "last_daily": today
+                }
+            }
         )
 
         try:
             await context.bot.send_message(
                 user["_id"],
-                "🎁 Daily Free Credit Added\n\n💳 +1 Credit\nType /start to check"
+                "🎁 Daily Free Credit Added\n\n"
+                "💳 +1 Credit\n"
+                f"⏳ Expires: {expiry}"
             )
         except:
             pass
@@ -176,8 +185,19 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user.get("unlimited"):
         users.update_one({"_id": uid}, {"$inc": {"credits": -1}})
 
+    credits_left = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
     json_text = json.dumps(result, indent=2, ensure_ascii=False)
-    await safe_reply(update, f"```json\n{json_text}\n```")
+
+    response = (
+        "✅ Search successful\n"
+        f"💳 Remaining: {credits_left}\n\n"
+        "JSON\n"
+        "```json\n"
+        f"{json_text}\n"
+        "```"
+    )
+
+    await safe_reply(update, response)
 
 # ================= BROADCAST =================
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -249,8 +269,17 @@ def main():
     app.add_handler(CommandHandler("add", add_credit))
     app.add_handler(CommandHandler("unlimited", unlimited))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler))
-    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content))
+    # 🔥 Broadcast FIRST
+    app.add_handler(
+        MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content),
+        group=0
+    )
+
+    # 🔥 Search AFTER
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler),
+        group=1
+    )
 
     app.job_queue.run_daily(
         daily_credit_job,
