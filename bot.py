@@ -6,7 +6,7 @@ import requests
 from datetime import datetime, date, time
 from zoneinfo import ZoneInfo
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder,
@@ -69,7 +69,7 @@ async def hacker_intro(update: Update):
 # ================= DAILY CREDIT =================
 async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
     today = date.today().isoformat()
-    expiry = "Today 11:59 PM IST"
+    expiry = "Expires in 24 hours"
 
     for user in users.find():
         if user.get("last_daily") == today:
@@ -85,7 +85,8 @@ async def daily_credit_job(context: ContextTypes.DEFAULT_TYPE):
                 user["_id"],
                 "🎁 Daily Free Credit Added\n\n"
                 "💳 +1 Credit\n"
-                f"⏳ Expires: {expiry}"
+                f"⏳ {expiry}\n\n"
+                "Type /start to use"
             )
         except:
             pass
@@ -103,9 +104,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "created_at": datetime.utcnow()
         })
 
-    intro_msg = await hacker_intro(update)
+    intro = await hacker_intro(update)
     await asyncio.sleep(0.8)
-    await intro_msg.delete()
+    await intro.delete()
 
     user = users.find_one({"_id": uid})
     credits = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
@@ -114,11 +115,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🌐 Welcome to Ghost Eye OSINT 🌐\n\n"
         f"👤 UserID: {uid}\n"
         f"💳 Credits: {credits}\n\n"
-        "💡 Send number to fetch details\n\n"
-        "• Number (without +91)\n"
+        "💡 Send a 10 digit mobile number\n\n"
         "• Name / Address\n"
         "• Operator / Circle\n"
-        "• Alt Numbers\n"
+        "• Alternate Numbers\n"
         "• Vehicle / UPI / Etc…"
     )
 
@@ -131,7 +131,11 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
     if not is_valid_number(text):
-        await update.message.reply_text("❌ Please send a valid 10 digit number")
+        await update.message.reply_text(
+            "❌ Invalid number\n\n"
+            "Enter a valid 10 digit mobile number\n"
+            "Starting with 6 / 7 / 8 / 9"
+        )
         return
 
     number = clean_number(text)
@@ -145,7 +149,14 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not user.get("unlimited") and user.get("credits", 0) <= 0:
-        await update.message.reply_text("❌ No credits left")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Buy Credits", url="https://t.me/Frx_Shooter")]
+        ])
+        await update.message.reply_text(
+            "❌ No credits left\n\n"
+            "Tap below to buy credits",
+            reply_markup=keyboard
+        )
         return
 
     await update.message.chat.send_action(ChatAction.TYPING)
@@ -172,13 +183,13 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     credits_left = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
     json_text = json.dumps(result, indent=2, ensure_ascii=False)
 
-    # ===== FINAL JSON OUTPUT (EXACT LIKE SCREENSHOT) =====
     await update.message.reply_text(
         "✅ Search successful\n"
         f"💳 Remaining: {credits_left}\n\n"
         "JSON"
     )
 
+    # Johnson-style output (Telegram native)
     await update.message.reply_text(json_text)
 
 # ================= BROADCAST =================
@@ -186,12 +197,14 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
 
-    broadcast_state["awaiting_content"] = True
-    broadcast_state["sent"] = 0
-    broadcast_state["failed"] = 0
+    broadcast_state.update({
+        "awaiting_content": True,
+        "sent": 0,
+        "failed": 0
+    })
 
     await update.message.reply_text(
-        "📢 Broadcast Mode ON\n\nSend text or photo to broadcast."
+        "📢 Broadcast Mode ON\n\nSend text or photo"
     )
 
 async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -218,7 +231,6 @@ async def broadcast_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
             broadcast_state["sent"] += 1
         except:
             broadcast_state["failed"] += 1
-
         await asyncio.sleep(0.05)
 
     await progress.edit_text(
@@ -232,7 +244,7 @@ async def add_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin(update.effective_user.id):
         uid, amt = map(int, context.args)
         users.update_one({"_id": uid}, {"$inc": {"credits": amt}}, upsert=True)
-        await update.message.reply_text("✅ Credits added")
+        await update.message.reply_text("✅ Credits updated")
 
 async def unlimited(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin(update.effective_user.id):
@@ -253,7 +265,6 @@ def main():
         MessageHandler(filters.TEXT | filters.PHOTO, broadcast_content),
         group=0
     )
-
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, search_handler),
         group=1
