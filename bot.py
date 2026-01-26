@@ -133,7 +133,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ Invalid number\n\n"
             "Enter a valid 10 digit mobile number\n"
-            "Starting with 6 / 7 / 8 / 9"
+            "Example - 78574***** "
         )
         return
 
@@ -181,10 +181,11 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     credits_left = "Unlimited" if user.get("unlimited") else user.get("credits", 0)
     json_text = json.dumps(result, indent=2, ensure_ascii=False)
 
-    # ===== FINAL JOHNSON OUTPUT (EXACT LOOK) =====
+    # ✅ ADDED LINE HERE (ONLY CHANGE)
     final_message = (
         "✅ Search successful\n"
         f"💳 Remaining: {credits_left}\n\n"
+        "Telegram native JSON code block with copy support\n\n"
         "JSON\n"
         f"{json_text}"
     )
